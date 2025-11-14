@@ -14,6 +14,8 @@ interface MessageCache {
   isDecrypted?: boolean; // Flag to indicate manual decryption
   amount?: string; // HBD transfer amount (e.g., "0.001 HBD")
   hidden?: boolean; // Flag for messages filtered by minimum HBD threshold
+  messageType?: 'memo' | 'customJsonText' | 'customJsonImage'; // Message type discriminator
+  hash?: string; // SHA-256 integrity hash for custom_json messages
 }
 
 interface ConversationCache {

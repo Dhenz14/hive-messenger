@@ -6,11 +6,11 @@ import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { requestTransfer } from '@/lib/hive';
+import { requestTransfer, broadcastTextMessage } from '@/lib/hive';
 import { requestKeychainEncryption } from '@/lib/encryption';
-import { cacheCustomJsonMessage } from '@/lib/messageCache';
+import { cacheCustomJsonMessage, cacheMessage, getConversationKey } from '@/lib/messageCache';
 import { processImageForBlockchain } from '@/lib/imageUtils';
-import { encryptImagePayload, type ImagePayload } from '@/lib/customJsonEncryption';
+import { encryptImagePayload, encryptTextPayload, type ImagePayload, type TextPayload } from '@/lib/customJsonEncryption';
 import { broadcastImageMessage } from '@/lib/imageChunking';
 import { checkSufficientRC, estimateCustomJsonRC, formatRC, getRCWarningLevel } from '@/lib/rcEstimation';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -358,35 +358,38 @@ export function MessageComposer({
     }
 
     try {
-      // Step 2: Encrypt message using Hive Keychain
-      let encryptedMemo: string;
+      // Step 2: Encrypt text payload using custom_json encryption
+      let encryptedPayload: string;
+      let hash: string;
       try {
-        console.log('[SEND] Step 2: Starting encryption...', {
+        console.log('[SEND TEXT] Step 2: Creating and encrypting text payload...', {
           from: user.username,
-          to: recipientUsername
+          to: recipientUsername,
+          messageLength: messageText.length
         });
         
-        // Use the recommended requestKeychainEncryption from encryption.ts
-        // Works on desktop Keychain extension AND Keychain Mobile browser
-        encryptedMemo = await requestKeychainEncryption(
-          messageText,
-          user.username,
-          recipientUsername
-        );
+        const textPayload: TextPayload = {
+          message: messageText,
+          from: user.username,
+          to: recipientUsername,
+          timestamp: Date.now()
+        };
         
-        console.log('[SEND] ✅ Encryption successful:', {
-          hasPrefix: encryptedMemo.startsWith('#'),
-          length: encryptedMemo.length,
-          preview: encryptedMemo.substring(0, 30) + '...'
+        const encrypted = await encryptTextPayload(textPayload, user.username);
+        encryptedPayload = encrypted.encrypted;
+        hash = encrypted.hash;
+        
+        console.log('[SEND TEXT] ✅ Encryption successful:', {
+          encryptedLength: encryptedPayload.length,
+          hash: hash.substring(0, 16) + '...'
         });
         
-        logger.sensitive('[MessageComposer] ✅ Successfully encrypted memo:', {
-          hasPrefix: encryptedMemo.startsWith('#'),
-          length: encryptedMemo.length,
-          preview: encryptedMemo.substring(0, 30) + '...'
+        logger.sensitive('[MessageComposer] ✅ Successfully encrypted text payload:', {
+          length: encryptedPayload.length,
+          hash: hash.substring(0, 16) + '...'
         });
       } catch (encryptError: any) {
-        console.error('[SEND] ❌ Encryption failed:', encryptError);
+        console.error('[SEND TEXT] ❌ Encryption failed:', encryptError);
         logger.error('[MessageComposer] ❌ Encryption error:', encryptError);
         
         const errorMessage = encryptError?.message || String(encryptError);
@@ -408,76 +411,45 @@ export function MessageComposer({
         return;
       }
 
-      // Step 3: Create HBD transfer with encrypted memo
-      // NOTE: Keychain may show "private key" warning - this is a FALSE POSITIVE
-      // The memo contains encrypted data which triggers Keychain's pattern detection
-      // We are NOT sending any private keys - only the encrypted message
+      // Step 3: Broadcast text message via custom_json (FREE - no HBD cost)
       let txId: string | undefined;
       try {
-        console.log('[SEND] Step 3: Broadcasting to blockchain...', {
+        console.log('[SEND TEXT] Step 3: Broadcasting custom_json to blockchain...', {
           from: user.username,
           to: recipientUsername,
-          amount: sendAmount + ' HBD',
-          memoPreview: encryptedMemo.substring(0, 30) + '...'
+          payloadSize: encryptedPayload.length
         });
         
-        logger.sensitive('[MessageComposer] Calling requestTransfer with memo:', {
-          hasPrefix: encryptedMemo.startsWith('#'),
-          memoPreview: encryptedMemo.substring(0, 30) + '...'
-        });
-        
-        const transfer = await requestTransfer(
+        txId = await broadcastTextMessage(
           user.username,
           recipientUsername,
-          sendAmount, // v2.0.0: Use custom amount instead of hardcoded 0.001
-          encryptedMemo,
-          'HBD'
+          encryptedPayload,
+          hash
         );
         
-        console.log('[SEND] Transfer response received:', {
-          success: transfer.success,
-          hasTxId: !!transfer.result
-        });
-        
-        logger.info('[MessageComposer] Transfer response:', {
-          success: transfer.success,
-          message: transfer.message,
-          error: transfer.error
-        });
-        
-        if (!transfer.success) {
-          throw new Error(transfer.message || 'Transfer failed');
-        }
-        
-        txId = transfer.result;
-        console.log('[SEND] ✅ Blockchain broadcast successful, txId:', txId);
-      } catch (transferError: any) {
-        console.error('[SEND] ❌ Blockchain transfer failed:', transferError);
-        logger.error('[MessageComposer] Transfer error caught:', transferError);
+        console.log('[SEND TEXT] ✅ Message broadcast successful, txId:', txId);
+        logger.info('[MessageComposer] Text message broadcast success, txId:', txId);
+      } catch (broadcastError: any) {
+        console.error('[SEND TEXT] ❌ Broadcast failed:', broadcastError);
+        logger.error('[MessageComposer] Broadcast error:', broadcastError);
         
         // Handle specific error cases
-        if (transferError?.error?.includes('cancel') || transferError?.message?.includes('cancel')) {
+        if (broadcastError?.message?.includes('cancel')) {
           toast({
-            title: 'Transfer Cancelled',
-            description: 'You cancelled the blockchain transfer',
+            title: 'Broadcast Cancelled',
+            description: 'You cancelled the message broadcast',
             variant: 'destructive',
           });
-        } else if (transferError?.message?.includes('RC') || transferError?.message?.includes('resource')) {
+        } else if (broadcastError?.message?.includes('RC') || broadcastError?.message?.includes('resource')) {
           toast({
             title: 'Insufficient RC',
             description: 'You do not have enough Resource Credits. Please wait and try again later.',
             variant: 'destructive',
           });
-        } else if (transferError?.message?.includes('balance') || transferError?.message?.includes('funds')) {
-          toast({
-            title: 'Insufficient Balance',
-            description: 'You need at least 0.001 HBD to send a message',
-            variant: 'destructive',
-          });
         } else {
           toast({
-            title: 'Transfer Failed',
-            description: transferError?.message || 'Failed to broadcast message to blockchain',
+            title: 'Broadcast Failed',
+            description: broadcastError?.message || 'Failed to broadcast message to blockchain',
             variant: 'destructive',
           });
         }
@@ -485,11 +457,71 @@ export function MessageComposer({
         return;
       }
 
-      // Show success message
-      toast({
-        title: 'Message Sent',
-        description: 'Your encrypted message has been sent on the blockchain',
-      });
+      // Step 4: Cache the message locally for instant display
+      const conversationKey = getConversationKey(user.username, recipientUsername);
+      await cacheMessage({
+        id: txId,
+        conversationKey,
+        from: user.username,
+        to: recipientUsername,
+        content: messageText,
+        encryptedContent: encryptedPayload,
+        timestamp: new Date().toISOString(),
+        txId,
+        confirmed: true,
+        isDecrypted: true,
+        messageType: 'customJsonText',
+        hash
+      }, user.username);
+
+      // Step 5: Optional - Send HBD transfer if amount > minimum
+      // This is separate from the message - message was already sent via custom_json
+      if (numericSendAmount > parseFloat(DEFAULT_MINIMUM_HBD)) {
+        try {
+          console.log('[SEND TEXT] Step 5: Sending optional HBD transfer...', {
+            amount: sendAmount + ' HBD',
+            from: user.username,
+            to: recipientUsername
+          });
+          
+          const transfer = await requestTransfer(
+            user.username,
+            recipientUsername,
+            sendAmount,
+            '', // Empty memo - message already sent via custom_json
+            'HBD'
+          );
+          
+          if (transfer.success) {
+            console.log('[SEND TEXT] ✅ HBD transfer successful');
+            toast({
+              title: 'Message & Payment Sent',
+              description: `Sent message + ${sendAmount} HBD to @${recipientUsername}`,
+            });
+          } else {
+            // Message was sent, but payment failed - notify user
+            toast({
+              title: 'Message Sent, Payment Failed',
+              description: `Message delivered, but ${sendAmount} HBD transfer failed: ${transfer.message}`,
+              variant: 'destructive',
+            });
+          }
+        } catch (transferError: any) {
+          // Message was sent successfully, but payment failed
+          console.error('[SEND TEXT] ❌ HBD transfer failed (message was sent):', transferError);
+          toast({
+            title: 'Message Sent, Payment Failed',
+            description: `Message delivered, but ${sendAmount} HBD transfer failed`,
+            variant: 'destructive',
+          });
+        }
+      } else {
+        // Show success message (no HBD transfer)
+        toast({
+          title: 'Message Sent (FREE)',
+          description: 'Your encrypted message has been sent via custom_json at no HBD cost',
+        });
+      }
 
       // Trigger fast polling for 15 seconds to show sent message instantly
       triggerFastPolling();

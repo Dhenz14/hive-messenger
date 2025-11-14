@@ -51,6 +51,8 @@ const mapMessageCacheToMessage = (msg: MessageCache, conversationId: string): Me
   status: msg.confirmed ? 'confirmed' : 'sending',
   trxId: msg.txId,
   isEncrypted: true,
+  messageType: msg.messageType || 'memo', // Default to 'memo' for backwards compatibility
+  hash: msg.hash,
 });
 
 const mapConversationCacheToConversation = (conv: ConversationCache): Conversation => ({

@@ -142,6 +142,8 @@ export interface Message {
   blockNum?: number;
   trxId?: string;
   isEncrypted: boolean;
+  messageType?: 'memo' | 'customJsonText' | 'customJsonImage';
+  hash?: string;
 }
 
 export interface Conversation {

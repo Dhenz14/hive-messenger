@@ -1,11 +1,22 @@
 import { gzipCompress, gzipDecompress } from './compression';
 
 /**
- * Custom JSON encryption module for Hive Messenger image messaging
+ * Custom JSON encryption module for Hive Messenger
  * Handles payload optimization, encryption, and integrity verification
+ * Supports both text messages and image messages
  * 
  * @module customJsonEncryption
  */
+
+/**
+ * Text message payload structure (before encryption)
+ */
+export interface TextPayload {
+  message: string;       // text message content
+  from: string;          // sender username
+  to: string;            // recipient username
+  timestamp: number;     // Unix timestamp
+}
 
 /**
  * Image message payload structure (before encryption)
@@ -21,7 +32,17 @@ export interface ImagePayload {
 }
 
 /**
- * Optimized payload structure using short keys (saves 25-30%)
+ * Optimized text payload structure using short keys (saves 25-30%)
+ */
+interface OptimizedTextPayload {
+  t: string;    // "to"
+  f: string;    // "from"
+  m: string;    // "msg" (message)
+  ts: number;   // "timestamp"
+}
+
+/**
+ * Optimized image payload structure using short keys (saves 25-30%)
  */
 interface OptimizedPayload {
   t: string;    // "to"
@@ -100,7 +121,8 @@ async function requestKeychainDecryption(
       return;
     }
 
-    window.hive_keychain.requestDecode(
+    // Use requestVerifyKey for decryption (correct API per documentation)
+    window.hive_keychain.requestVerifyKey(
       username,
       encryptedMessage,
       'Memo',
@@ -113,6 +135,122 @@ async function requestKeychainDecryption(
       }
     );
   });
+}
+
+/**
+ * Encrypt a text message payload for blockchain storage
+ * 
+ * Process:
+ * 1. Create optimized JSON with short keys (saves 25-30%)
+ * 2. Generate SHA-256 hash for integrity
+ * 3. Encrypt via Hive Keychain (memo key)
+ * 
+ * @param payload - Text payload to encrypt
+ * @param senderUsername - Sender's username
+ * @returns Promise<{ encrypted: string; hash: string }>
+ */
+export async function encryptTextPayload(
+  payload: TextPayload,
+  senderUsername: string
+): Promise<{ encrypted: string; hash: string }> {
+  console.log('[ENCRYPT TEXT] Starting encryption process:', {
+    from: payload.from,
+    to: payload.to,
+    messageLength: payload.message.length
+  });
+
+  // Step 1: Create optimized JSON with short keys
+  const optimized: OptimizedTextPayload = {
+    t: payload.to,
+    f: payload.from,
+    m: payload.message,
+    ts: payload.timestamp
+  };
+
+  // Step 2: Stringify with no whitespace
+  const jsonStr = JSON.stringify(optimized);
+  console.log('[ENCRYPT TEXT] Optimized JSON size:', jsonStr.length, 'bytes');
+
+  // Step 3: Generate SHA-256 hash for integrity
+  const hash = await generateSHA256(jsonStr);
+  console.log('[ENCRYPT TEXT] Generated SHA-256 hash:', hash.substring(0, 16) + '...');
+
+  // Step 4: Encrypt via Keychain (prefix with # for memo encryption)
+  const messageToEncrypt = `#${jsonStr}`;
+  const encrypted = await requestKeychainEncryption(
+    messageToEncrypt,
+    senderUsername,
+    payload.to
+  );
+
+  console.log('[ENCRYPT TEXT] ✅ Encryption complete, final size:', encrypted.length, 'bytes');
+
+  return { encrypted, hash };
+}
+
+/**
+ * Decrypt an encrypted text message payload
+ * 
+ * Process:
+ * 1. Decrypt via Hive Keychain
+ * 2. Verify integrity hash (if provided)
+ * 3. Parse and expand JSON
+ * 
+ * @param encryptedPayload - Encrypted payload from blockchain
+ * @param username - User's username for decryption
+ * @param expectedHash - Optional SHA-256 hash for verification
+ * @returns Promise<TextPayload>
+ * 
+ * @throws Error if integrity check fails
+ */
+export async function decryptTextPayload(
+  encryptedPayload: string,
+  username: string,
+  expectedHash?: string
+): Promise<TextPayload> {
+  console.log('[DECRYPT TEXT] Starting decryption process:', {
+    username,
+    payloadLength: encryptedPayload.length,
+    hasHash: !!expectedHash
+  });
+
+  // Step 1: Decrypt via Keychain
+  const decrypted = await requestKeychainDecryption(encryptedPayload, username);
+
+  // Step 2: Remove # prefix if present
+  const jsonStr = decrypted.startsWith('#') ? decrypted.substring(1) : decrypted;
+  console.log('[DECRYPT TEXT] Decrypted JSON size:', jsonStr.length, 'bytes');
+
+  // Step 3: Verify integrity if hash provided
+  if (expectedHash) {
+    const actualHash = await generateSHA256(jsonStr);
+    if (actualHash !== expectedHash) {
+      console.error('[DECRYPT TEXT] ❌ Integrity check failed:', {
+        expected: expectedHash.substring(0, 16),
+        actual: actualHash.substring(0, 16)
+      });
+      throw new Error('Integrity check failed - data may be corrupted');
+    }
+    console.log('[DECRYPT TEXT] ✅ Integrity verified');
+  }
+
+  // Step 4: Parse JSON
+  const optimized: OptimizedTextPayload = JSON.parse(jsonStr);
+
+  const payload: TextPayload = {
+    to: optimized.t,
+    from: optimized.f,
+    message: optimized.m,
+    timestamp: optimized.ts
+  };
+
+  console.log('[DECRYPT TEXT] ✅ Decryption complete:', {
+    from: payload.from,
+    to: payload.to,
+    messageLength: payload.message.length
+  });
+
+  return payload;
 }
 
 /**

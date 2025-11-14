@@ -551,8 +551,158 @@ export const decryptMemosInParallel = async (
 };
 
 // ============================================================================
-// CUSTOM JSON: Image Message Fetching & Reassembly
+// CUSTOM JSON: Text & Image Message Operations
 // ============================================================================
+
+/**
+ * Broadcast a text message via custom_json operation (FREE - no HBD cost)
+ * 
+ * @param username - Sender's username
+ * @param recipientUsername - Recipient's username
+ * @param encryptedPayload - Encrypted message payload
+ * @param hash - SHA-256 hash of the payload (for integrity)
+ * @returns Promise<string> - Transaction ID
+ */
+export async function broadcastTextMessage(
+  username: string,
+  recipientUsername: string,
+  encryptedPayload: string,
+  hash: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!window.hive_keychain) {
+      reject(new Error('Hive Keychain not installed'));
+      return;
+    }
+
+    // Custom JSON structure for text messages
+    const json = JSON.stringify({
+      v: 1,
+      type: 'text',
+      to: recipientUsername,
+      e: encryptedPayload,
+      h: hash
+    });
+
+    logger.info('[BROADCAST TEXT] Broadcasting custom_json text message:', {
+      from: username,
+      to: recipientUsername,
+      payloadSize: encryptedPayload.length,
+      hash: hash.substring(0, 16) + '...'
+    });
+
+    // Broadcast custom_json operation
+    window.hive_keychain.requestCustomJson(
+      username,
+      'hive-messenger-text',
+      'Posting',
+      json,
+      'Send encrypted message to ' + recipientUsername,
+      (response: any) => {
+        if (response.success) {
+          logger.info('[BROADCAST TEXT] ✅ Message sent successfully, txId:', response.result);
+          resolve(response.result);
+        } else {
+          logger.error('[BROADCAST TEXT] ❌ Broadcast failed:', response.message);
+          reject(new Error(response.message || 'Broadcast failed'));
+        }
+      }
+    );
+  });
+}
+
+export interface CustomJsonTextOperation {
+  txId: string;
+  timestamp: string;
+  from: string;
+  to: string;
+  encryptedPayload: string;
+  hash: string;
+}
+
+/**
+ * Fetch custom_json text messages for a conversation
+ * 
+ * @param username - User's Hive username
+ * @param partnerUsername - Conversation partner's username
+ * @param limit - Maximum operations to fetch (default: 200)
+ * @returns Array of custom_json text messages
+ */
+export async function getCustomJsonTextMessages(
+  username: string,
+  partnerUsername: string,
+  limit: number = 200
+): Promise<CustomJsonTextOperation[]> {
+  try {
+    logger.info('[CUSTOM JSON TEXT] Fetching messages for conversation:', { username, partnerUsername, limit });
+    
+    // Fetch account history with operation filter
+    // custom_json is operation type 18, so bit 18 = 2^18 = 262144
+    const history = await hiveClient.database.call('get_account_history', [
+      username,
+      -1,
+      limit,
+      262144  // Filter for custom_json operations only (2^18)
+    ]);
+    
+    if (!history || !Array.isArray(history)) {
+      logger.warn('[CUSTOM JSON TEXT] No history returned');
+      return [];
+    }
+    
+    logger.info('[CUSTOM JSON TEXT] Retrieved', history.length, 'operations from blockchain');
+    
+    const textMessages: CustomJsonTextOperation[] = [];
+    
+    for (const [index, op] of history) {
+      const [opType, opData] = op.op;
+      
+      if (opType !== 'custom_json') continue;
+      if (opData.id !== 'hive-messenger-text') continue;
+      
+      let jsonData: any;
+      try {
+        jsonData = typeof opData.json === 'string' ? JSON.parse(opData.json) : opData.json;
+      } catch (parseError) {
+        logger.warn('[CUSTOM JSON TEXT] Failed to parse JSON:', parseError);
+        continue;
+      }
+      
+      // Check version and type
+      if (jsonData.v !== 1 || jsonData.type !== 'text') continue;
+      
+      // Determine sender from required_posting_auths
+      const sender = opData.required_posting_auths?.[0];
+      if (!sender) continue;
+      
+      // Get recipient from JSON
+      const recipient = jsonData.to;
+      if (!recipient) continue;
+      
+      // Check if this involves our conversation (either direction)
+      const isRelevant = 
+        (sender === username && recipient === partnerUsername) ||
+        (sender === partnerUsername && recipient === username);
+      
+      if (!isRelevant) continue;
+      
+      textMessages.push({
+        txId: op.trx_id,
+        timestamp: normalizeHiveTimestamp(op.timestamp),
+        from: sender,
+        to: recipient,
+        encryptedPayload: jsonData.e,
+        hash: jsonData.h
+      });
+    }
+    
+    logger.info('[CUSTOM JSON TEXT] Retrieved', textMessages.length, 'text messages');
+    return textMessages;
+  } catch (error) {
+    logger.error('[CUSTOM JSON TEXT] Failed to fetch messages:', error);
+    return [];
+  }
+}
 
 export interface CustomJsonOperation {
   txId: string;

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   getConversationMessages,
+  getCustomJsonTextMessages,
   decryptMemo,
   discoverConversations,
 } from '@/lib/hive';
@@ -18,6 +19,7 @@ import { useEffect, useState } from 'react';
 import { logger } from '@/lib/logger';
 import { getAccountMetadata, parseMinimumHBD, DEFAULT_MINIMUM_HBD } from '@/lib/accountMetadata';
 import { useExceptionsList } from '@/hooks/useExceptionsList';
+import { decryptTextPayload } from '@/lib/customJsonEncryption';
 
 interface UseBlockchainMessagesOptions {
   partnerUsername: string;
@@ -220,20 +222,35 @@ export function useBlockchainMessages({
           lastSyncedOpId = null;
         }
         
-        // TIER 2: Fetch latest operations and filter client-side for new ones
-        // (Hive API's start parameter goes backwards, so we filter instead)
-        const blockchainMessages = await getConversationMessages(
+        // HYBRID APPROACH: Fetch BOTH transfer operations (legacy) AND custom_json text messages
+        // Then merge them chronologically for unified conversation view
+        
+        // Fetch legacy transfer-based messages (memo encryption)
+        const transferMessages = await getConversationMessages(
           user.username,
           partnerUsername,
           200,  // Always fetch last 200, filter for new ones
           lastSyncedOpId
         );
+        
+        // Fetch new custom_json text messages
+        const customJsonTextMessages = await getCustomJsonTextMessages(
+          user.username,
+          partnerUsername,
+          200
+        );
+        
+        logger.info('[HYBRID] Retrieved:', {
+          transferMessages: transferMessages.length,
+          customJsonTextMessages: customJsonTextMessages.length
+        });
 
         // TIER 1 OPTIMIZATION: Batch all new messages for single IndexedDB transaction
         const newMessagesToCache: MessageCache[] = [];
         let highestOpId = lastSyncedOpId || 0;
 
-        for (const msg of blockchainMessages) {
+        // Process legacy transfer-based messages
+        for (const msg of transferMessages) {
           // TIER 2: Track highest operation ID for incremental sync
           if (msg.index > highestOpId) {
             highestOpId = msg.index;
@@ -258,6 +275,7 @@ export function useBlockchainMessages({
               txId: msg.trx_id,
               confirmed: true,
               amount: msg.amount, // Store HBD transfer amount
+              messageType: 'memo', // Legacy memo-based message
             };
 
             newMessagesToCache.push(messageCache);
@@ -271,14 +289,14 @@ export function useBlockchainMessages({
             const shouldHide = !senderIsException && messageAmount < userMinimumAmount;
             
             if (shouldHide) {
-              logger.info('[FILTER] Hiding message below minimum:', {
+              logger.info('[FILTER] Hiding memo message below minimum:', {
                 txId: msg.trx_id.substring(0, 20),
                 from: msg.from,
                 amount: msg.amount,
                 minimum: userMinimumHBD
               });
             } else if (senderIsException && messageAmount < userMinimumAmount) {
-              logger.info('[FILTER] Showing message from exception despite low amount:', {
+              logger.info('[FILTER] Showing memo message from exception despite low amount:', {
                 txId: msg.trx_id.substring(0, 20),
                 from: msg.from,
                 amount: msg.amount
@@ -297,11 +315,40 @@ export function useBlockchainMessages({
               confirmed: true,
               amount: msg.amount, // Store HBD transfer amount
               hidden: shouldHide, // Mark as hidden if below minimum AND not exception
+              messageType: 'memo', // Legacy memo-based message
             };
 
             newMessagesToCache.push(messageCache);
             mergedMessages.set(msg.trx_id, messageCache);
           }
+        }
+        
+        // Process custom_json text messages (always visible - no minimum HBD filter)
+        for (const customJsonMsg of customJsonTextMessages) {
+          if (mergedMessages.has(customJsonMsg.txId)) {
+            continue; // Already cached
+          }
+          
+          // Store custom_json message with encrypted placeholder
+          // User will decrypt on demand
+          const messageCache: MessageCache = {
+            id: customJsonMsg.txId,
+            conversationKey,
+            from: customJsonMsg.from,
+            to: customJsonMsg.to,
+            content: '[🔒 Encrypted - Click to decrypt]',
+            encryptedContent: customJsonMsg.encryptedPayload,
+            timestamp: customJsonMsg.timestamp,
+            txId: customJsonMsg.txId,
+            confirmed: true,
+            messageType: 'customJsonText', // New custom_json text message
+            hash: customJsonMsg.hash,
+            // No minimum HBD filtering for custom_json messages
+            hidden: false,
+          };
+          
+          newMessagesToCache.push(messageCache);
+          mergedMessages.set(customJsonMsg.txId, messageCache);
         }
 
         // TIER 1 OPTIMIZATION: Single batched write instead of N individual writes
@@ -327,24 +374,38 @@ export function useBlockchainMessages({
       
       mergedMessages.forEach((msg, id) => {
         if (msg.from !== user.username) {
-          // RECEIVED message: Re-evaluate against current minimum AND exceptions list
-          const msgAmount = parseHBDAmount(msg.amount || '0.000 HBD');
-          const senderIsException = isException(msg.from);
-          // Hide if: below minimum AND not an exception
-          const isHidden = !senderIsException && msgAmount < userMinimumAmount;
-          
-          // Only update if hidden state changed
-          if (msg.hidden !== isHidden) {
-            mergedMessages.set(id, { ...msg, hidden: isHidden });
-            reEvaluatedCount++;
-            logger.info('[PHASE4] Updated hidden flag:', {
-              txId: msg.id.substring(0, 20),
-              from: msg.from,
-              amount: msg.amount,
-              isException: senderIsException,
-              oldHidden: msg.hidden,
-              newHidden: isHidden
-            });
+          // RECEIVED message: Re-evaluate ONLY if it's a memo-based message
+          // custom_json text messages are always visible (no minimum HBD filter)
+          if (msg.messageType === 'memo' || !msg.messageType) {
+            // Legacy memo-based message: Apply minimum HBD filter
+            const msgAmount = parseHBDAmount(msg.amount || '0.000 HBD');
+            const senderIsException = isException(msg.from);
+            // Hide if: below minimum AND not an exception
+            const isHidden = !senderIsException && msgAmount < userMinimumAmount;
+            
+            // Only update if hidden state changed
+            if (msg.hidden !== isHidden) {
+              mergedMessages.set(id, { ...msg, hidden: isHidden });
+              reEvaluatedCount++;
+              logger.info('[PHASE4] Updated hidden flag for memo message:', {
+                txId: msg.id.substring(0, 20),
+                from: msg.from,
+                amount: msg.amount,
+                isException: senderIsException,
+                oldHidden: msg.hidden,
+                newHidden: isHidden
+              });
+            }
+          } else if (msg.messageType === 'customJsonText') {
+            // custom_json text message: Always visible
+            if (msg.hidden !== false) {
+              mergedMessages.set(id, { ...msg, hidden: false });
+              reEvaluatedCount++;
+              logger.info('[PHASE4] custom_json text message always visible:', {
+                txId: msg.id.substring(0, 20),
+                from: msg.from
+              });
+            }
           }
         } else {
           // SENT message: Always visible (never hide sent messages)

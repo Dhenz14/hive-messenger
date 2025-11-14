@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import type { Message } from '@shared/schema';
 import { useAuth } from '@/contexts/AuthContext';
 import { decryptMemo } from '@/lib/hive';
+import { decryptTextPayload } from '@/lib/customJsonEncryption';
 import { updateMessageContent } from '@/lib/messageCache';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -68,6 +69,7 @@ export function MessageBubble({ message, isSent, showAvatar, showTimestamp }: Me
       id: message.id,
       sender: message.sender,
       recipient: message.recipient,
+      messageType: message.messageType,
       encryptedMemoPreview: message.encryptedMemo?.substring(0, 40) + '...',
       encryptedMemoLength: message.encryptedMemo?.length,
       currentUser: user.username
@@ -76,15 +78,35 @@ export function MessageBubble({ message, isSent, showAvatar, showTimestamp }: Me
     setIsDecrypting(true);
     
     try {
-      logger.info('[MessageBubble] Calling decryptMemo with Keychain...');
-
-      const decrypted = await decryptMemo(
-        user.username, 
-        message.encryptedMemo,
-        message.sender,
-        message.id  // txId for memo caching
-      );
-      logger.sensitive('[MessageBubble] decryptMemo returned:', decrypted ? decrypted.substring(0, 50) + '...' : null);
+      let decrypted: string | null = null;
+      
+      // Hybrid decryption: Check messageType and use appropriate decryption method
+      if (message.messageType === 'customJsonText') {
+        // NEW: Decrypt custom_json text message using TextPayload decryption
+        logger.info('[MessageBubble] Decrypting custom_json text message...');
+        
+        const textPayload = await decryptTextPayload(
+          message.encryptedMemo,
+          message.hash || '',
+          user.username
+        );
+        
+        if (textPayload) {
+          decrypted = textPayload.message;
+          logger.sensitive('[MessageBubble] decryptTextPayload returned:', decrypted ? decrypted.substring(0, 50) + '...' : null);
+        }
+      } else {
+        // LEGACY: Decrypt memo-based message using traditional memo decryption
+        logger.info('[MessageBubble] Decrypting legacy memo message...');
+        
+        decrypted = await decryptMemo(
+          user.username, 
+          message.encryptedMemo,
+          message.sender,
+          message.id  // txId for memo caching
+        );
+        logger.sensitive('[MessageBubble] decryptMemo returned:', decrypted ? decrypted.substring(0, 50) + '...' : null);
+      }
 
       if (decrypted) {
         logger.info('[DECRYPT] Updating cache with decrypted content, length:', decrypted.length);
