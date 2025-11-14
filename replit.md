@@ -1,7 +1,17 @@
 # Hive Messenger - Decentralized Encrypted Blockchain Messaging PWA
 
 ## Overview
-Hive Messenger is a decentralized, end-to-end encrypted messaging Progressive Web App (PWA) built on the Hive blockchain. It provides a censorship-resistant communication platform with no centralized servers, backend, database, or sessions. All operations are client-side, using the Hive blockchain for immutable storage and IndexedDB for local caching. The project aims to deliver a free, private, and reliable messaging solution that is globally accessible and resilient against central points of failure. Key capabilities include end-to-end encryption via Hive memo keys, Hive Keychain authentication, messages sent via memo transfers, Lightning Network Bitcoin tips via v4v.app bridge, and a mobile-first responsive design.
+Hive Messenger is a decentralized, end-to-end encrypted messaging Progressive Web App (PWA) built on the Hive blockchain. It provides a censorship-resistant communication platform with no centralized servers, backend, database, or sessions. All operations are client-side, using the Hive blockchain for immutable storage and IndexedDB for local caching. The project aims to deliver a free, private, and reliable messaging solution that is globally accessible and resilient against central points of failure. Key capabilities include end-to-end encryption via Hive memo keys, Hive Keychain authentication, FREE text messaging via custom_json operations, Lightning Network Bitcoin tips via v4v.app bridge, and a mobile-first responsive design.
+
+## Recent Changes (v2.2.2)
+- **FREE Messaging Implementation**: Completed migration from memo-based transfers to custom_json operations for text messages.
+  - **Zero HBD Cost**: Users can now send text messages completely FREE (0.000 HBD) via custom_json operations.
+  - **Dual-Path Validation**: Supports both FREE custom_json messaging (0.000 HBD) and optional HBD transfers (>= 0.001 HBD).
+  - **Smart UI Indicators**: Shows "FREE messaging via custom_json" badge when amount is 0.000, hides minimum HBD warnings.
+  - **Backwards Compatible**: Continues to read and decrypt legacy memo-based messages seamlessly.
+  - **Hash Integrity**: All custom_json text messages include SHA-256 hash verification for data integrity.
+  - **Optional Payments**: Users can still send HBD alongside messages by setting amount > 0, with recipient minimum validation.
+  - **Default Behavior**: Message composer initializes to 0.000 HBD for FREE messaging by default.
 
 ## Recent Changes (v2.2.1)
 - **Bug Fix: Real Exchange Rate API**: Replaced mock BTC/HBD exchange rate (100,000) with real-time CoinGecko API integration.
@@ -76,7 +86,7 @@ Hive Messenger features a 100% decentralized architecture. It's a React PWA host
 - **Mobile Optimization**: Viewport meta allows user zoom without auto-zoom (16px+ inputs), 24 interactive elements upgraded to 44px+ touch targets, iOS safe-area padding with min-h-[calc()] for notched devices (iPhone 14+, Dynamic Island).
 
 ### Feature Specifications
-- **Text Messaging**: End-to-end encrypted messages via memo transfers (0.001 HBD per message).
+- **Text Messaging**: End-to-end encrypted messages via custom_json operations (FREE - 0.000 HBD per message) with optional HBD transfers.
 - **Lightning Network Tips**: Send Bitcoin satoshis via Lightning Network to users with Lightning Addresses.
   - **V4V.app Bridge**: Convert HBD to BTC Lightning payments through v4v.app service (0.8% fee).
   - **LNURL Invoice Generation**: Generate Lightning invoices via recipient's LNURL endpoint.

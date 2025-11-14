@@ -54,15 +54,16 @@ export function MessageComposer({
     isError: isErrorMinimum,
   } = useRecipientMinimum(recipientUsername);
   
-  // v2.0.0: Send amount state (initialize with safe default to avoid NaN)
-  const [sendAmount, setSendAmount] = useState(DEFAULT_MINIMUM_HBD);
+  // v2.2.0: Send amount state (initialize to 0.000 for FREE custom_json messaging)
+  const [sendAmount, setSendAmount] = useState("0.000");
   
   // Update send amount when recipient minimum changes (after loading)
+  // Only auto-update if user hasn't changed from default 0.000
   useEffect(() => {
-    if (!isLoadingMinimum && recipientMinimum) {
+    if (!isLoadingMinimum && recipientMinimum && sendAmount === "0.000") {
       setSendAmount(recipientMinimum);
     }
-  }, [recipientMinimum, isLoadingMinimum]);
+  }, [recipientMinimum, isLoadingMinimum, sendAmount]);
 
   // Handle image selection
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -305,50 +306,93 @@ export function MessageComposer({
       return;
     }
     
-    // v2.0.0: Step 2: Validate send amount BEFORE encryption (prevent wasted Keychain prompts)
-    // Guard against undefined recipientMinimum (error or disabled query)
-    const effectiveRecipientMinimum = recipientMinimum || DEFAULT_MINIMUM_HBD;
+    // v2.2.0: Dual-path validation - support FREE custom_json (0.000) and optional HBD transfers
     const numericSendAmount = parseFloat(sendAmount);
-    const numericMinimum = parseFloat(effectiveRecipientMinimum);
     
-    if (isNaN(numericSendAmount) || numericSendAmount < 0.001) {
+    // Step 2a: Validate numeric format and precision
+    if (isNaN(numericSendAmount)) {
       toast({
         title: 'Invalid Amount',
-        description: 'Send amount must be at least 0.001 HBD',
+        description: 'Please enter a valid number',
         variant: 'destructive',
       });
       setIsSending(false);
       return;
     }
     
-    if (isNaN(numericMinimum)) {
-      // Should never happen due to DEFAULT fallback, but guard anyway
-      logger.error('[MessageComposer] Invalid recipient minimum:', recipientMinimum);
+    // Reject negative amounts
+    if (numericSendAmount < 0) {
       toast({
-        title: 'Validation Error',
-        description: 'Could not determine recipient minimum. Please try again.',
+        title: 'Invalid Amount',
+        description: 'Amount cannot be negative',
         variant: 'destructive',
       });
       setIsSending(false);
       return;
     }
     
-    // v2.1.0: Allow sending at DEFAULT_MINIMUM_HBD (0.001) even if below recipient's minimum
-    // This assumes the sender is exempted by the recipient (stored in recipient's localStorage)
-    // Use precise integer thousandths comparison to avoid floating-point precision issues
+    // Check precision (max 3 decimal places)
     const thousandthsRaw = numericSendAmount * 1000;
     const thousandthsRounded = Math.round(thousandthsRaw);
     const isValidPrecision = Math.abs(thousandthsRaw - thousandthsRounded) < 1e-9;
-    const isDefaultAmount = isValidPrecision && thousandthsRounded === 1;
     
-    if (numericSendAmount < numericMinimum && !isDefaultAmount) {
+    if (!isValidPrecision) {
       toast({
-        title: 'Amount Below Minimum',
-        description: `@${recipientUsername} requires at least ${effectiveRecipientMinimum} HBD. Your amount: ${sendAmount} HBD`,
+        title: 'Invalid Precision',
+        description: 'Amount must have at most 3 decimal places',
         variant: 'destructive',
       });
       setIsSending(false);
       return;
+    }
+    
+    // Step 2b: Dual-path validation
+    if (numericSendAmount === 0) {
+      // Path 1: FREE custom_json messaging (no HBD transfer)
+      // No additional validation needed - all messages can be sent for free via custom_json
+      logger.info('[MessageComposer] FREE custom_json send (0.000 HBD)');
+    } else {
+      // Path 2: Optional HBD transfer validation
+      
+      // Block invalid range: 0 < amount < 0.001
+      if (numericSendAmount < 0.001) {
+        toast({
+          title: 'Invalid Amount',
+          description: 'HBD amount must be 0.000 (FREE) or at least 0.001 HBD',
+          variant: 'destructive',
+        });
+        setIsSending(false);
+        return;
+      }
+      
+      // Validate against recipient's minimum (if amount >= 0.001)
+      const effectiveRecipientMinimum = recipientMinimum || DEFAULT_MINIMUM_HBD;
+      const numericMinimum = parseFloat(effectiveRecipientMinimum);
+      
+      if (isNaN(numericMinimum)) {
+        logger.error('[MessageComposer] Invalid recipient minimum:', recipientMinimum);
+        toast({
+          title: 'Validation Error',
+          description: 'Could not determine recipient minimum. Please try again.',
+          variant: 'destructive',
+        });
+        setIsSending(false);
+        return;
+      }
+      
+      // v2.1.0: Allow sending at DEFAULT_MINIMUM_HBD (0.001) even if below recipient's minimum
+      // This assumes the sender is exempted by the recipient (stored in recipient's localStorage)
+      const isDefaultAmount = isValidPrecision && thousandthsRounded === 1;
+      
+      if (numericSendAmount < numericMinimum && !isDefaultAmount) {
+        toast({
+          title: 'Amount Below Minimum',
+          description: `@${recipientUsername} requires at least ${effectiveRecipientMinimum} HBD. Your amount: ${sendAmount} HBD`,
+          variant: 'destructive',
+        });
+        setIsSending(false);
+        return;
+      }
     }
 
     // Clear the input immediately for instant feedback
@@ -474,9 +518,9 @@ export function MessageComposer({
         hash
       }, user.username);
 
-      // Step 5: Optional - Send HBD transfer if amount > minimum
+      // Step 5: Optional - Send HBD transfer if amount > 0
       // This is separate from the message - message was already sent via custom_json
-      if (numericSendAmount > parseFloat(DEFAULT_MINIMUM_HBD)) {
+      if (numericSendAmount > 0) {
         try {
           console.log('[SEND TEXT] Step 5: Sending optional HBD transfer...', {
             amount: sendAmount + ' HBD',
@@ -607,7 +651,7 @@ export function MessageComposer({
               <Input
                 type="number"
                 step="0.001"
-                min="0.001"
+                min="0.000"
                 max="1000000.000"
                 value={sendAmount}
                 onChange={(e) => setSendAmount(e.target.value)}
@@ -618,8 +662,18 @@ export function MessageComposer({
               <span className="text-caption text-muted-foreground">HBD</span>
             </div>
             
-            {/* v2.1.0: Show exemption indicator when sending at default amount below recipient's minimum */}
-            {!isLoadingMinimum && recipientMinimum && parseFloat(sendAmount) < parseFloat(recipientMinimum) && (
+            {/* v2.2.0: Show FREE messaging indicator when amount is 0 */}
+            {parseFloat(sendAmount) === 0 && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-md" data-testid="alert-free-messaging">
+                <CheckCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span className="text-caption text-blue-700 dark:text-blue-300">
+                  FREE messaging via custom_json (no HBD cost)
+                </span>
+              </div>
+            )}
+            
+            {/* v2.1.0: Show exemption/minimum warnings only when amount > 0 */}
+            {parseFloat(sendAmount) > 0 && !isLoadingMinimum && recipientMinimum && parseFloat(sendAmount) < parseFloat(recipientMinimum) && (
               <>
                 {parseFloat(sendAmount) === parseFloat(DEFAULT_MINIMUM_HBD) ? (
                   <div className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-md" data-testid="alert-exemption-indicator">
@@ -639,7 +693,7 @@ export function MessageComposer({
               </>
             )}
             
-            {!isLoadingMinimum && recipientMinimum && recipientMinimum !== DEFAULT_MINIMUM_HBD && parseFloat(sendAmount) >= parseFloat(recipientMinimum) && (
+            {parseFloat(sendAmount) > 0 && !isLoadingMinimum && recipientMinimum && recipientMinimum !== DEFAULT_MINIMUM_HBD && parseFloat(sendAmount) >= parseFloat(recipientMinimum) && (
               <div className="flex items-center gap-2 text-caption text-muted-foreground">
                 <Info className="w-3 h-3" />
                 <span>@{recipientUsername}'s minimum: {recipientMinimum} HBD</span>
