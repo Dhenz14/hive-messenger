@@ -1,0 +1,760 @@
+# Custom JSON Messaging Implementation Guide
+
+## Overview
+This guide provides complete code and step-by-step instructions for implementing FREE custom_json-based messaging on Hive blockchain using Hive Keychain encryption (ECDH + AES-256-CBC).
+
+**Key Benefits:**
+- ✅ 100% FREE messaging (no HBD cost, only RC)
+- ✅ End-to-end encryption using Hive memo keys
+- ✅ Identical security to memo-based transfers
+- ✅ Supports both text and image messages
+
+---
+
+## Architecture Overview
+
+### Data Flow
+```
+User Input → Encrypt with Keychain → Broadcast custom_json → Blockchain
+Blockchain → Fetch custom_json ops → Decrypt with Keychain → Display
+```
+
+### Key Components
+1. **customJsonEncryption.ts** - Handles encryption/decryption via Hive Keychain
+2. **hive.ts** - Blockchain interactions (broadcast, fetch operations)
+3. **useBlockchainMessages.ts** - React hook for conversation discovery
+4. **MessageComposer.tsx** - UI component for sending messages
+5. **messageCache.ts** - IndexedDB storage for offline access
+
+---
+
+## Step 1: Encryption/Decryption Module
+
+**File: `client/src/lib/customJsonEncryption.ts`**
+
+This module handles all encryption/decryption using Hive Keychain's memo encryption.
+
+```typescript
+/**
+ * Custom JSON encryption module for Hive Messenger
+ * Handles payload optimization, encryption, and integrity verification
+ */
+
+/**
+ * Text message payload structure (before encryption)
+ */
+export interface TextPayload {
+  message: string;       // text message content
+  from: string;          // sender username
+  to: string;            // recipient username
+  timestamp: number;     // Unix timestamp
+}
+
+/**
+ * Optimized text payload structure using short keys (saves 25-30%)
+ */
+interface OptimizedTextPayload {
+  t: string;    // "to"
+  f: string;    // "from"
+  m: string;    // "msg" (message)
+  ts: number;   // "timestamp"
+}
+
+/**
+ * Generate SHA-256 hash for integrity verification
+ */
+export async function generateSHA256(data: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const dataBuffer = encoder.encode(data);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Request encryption from Hive Keychain
+ * 
+ * @param message - Message to encrypt (should start with #)
+ * @param senderUsername - Sender's Hive username
+ * @param recipientUsername - Recipient's Hive username
+ * @returns Promise<string> - Encrypted message
+ */
+async function requestKeychainEncryption(
+  message: string,
+  senderUsername: string,
+  recipientUsername: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!window.hive_keychain) {
+      reject(new Error('Hive Keychain not installed'));
+      return;
+    }
+
+    // Use requestEncodeMessage - the correct Keychain API
+    window.hive_keychain.requestEncodeMessage(
+      senderUsername,
+      recipientUsername,
+      message,
+      'Memo',
+      (response: any) => {
+        if (response.success) {
+          resolve(response.result);
+        } else {
+          reject(new Error(response.message || 'Encryption failed'));
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Request decryption from Hive Keychain
+ * 
+ * @param encryptedMessage - Encrypted message to decrypt
+ * @param username - User's Hive username
+ * @returns Promise<string> - Decrypted message
+ */
+async function requestKeychainDecryption(
+  encryptedMessage: string,
+  username: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!window.hive_keychain) {
+      reject(new Error('Hive Keychain not installed'));
+      return;
+    }
+
+    // Use requestVerifyKey - the correct Keychain API for decryption
+    window.hive_keychain.requestVerifyKey(
+      username,
+      encryptedMessage,
+      'Memo',
+      (response: any) => {
+        if (response.success) {
+          resolve(response.result);
+        } else {
+          reject(new Error(response.message || 'Decryption failed'));
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Encrypt a text message payload for blockchain storage
+ * 
+ * Process:
+ * 1. Create optimized JSON with short keys (saves 25-30%)
+ * 2. Generate SHA-256 hash for integrity
+ * 3. Encrypt via Hive Keychain (memo key)
+ * 
+ * @param payload - Text payload to encrypt
+ * @param senderUsername - Sender's username
+ * @returns Promise<{ encrypted: string; hash: string }>
+ */
+export async function encryptTextPayload(
+  payload: TextPayload,
+  senderUsername: string
+): Promise<{ encrypted: string; hash: string }> {
+  console.log('[ENCRYPT TEXT] Starting encryption process:', {
+    from: payload.from,
+    to: payload.to,
+    messageLength: payload.message.length
+  });
+
+  // Step 1: Create optimized JSON with short keys
+  const optimized: OptimizedTextPayload = {
+    t: payload.to,
+    f: payload.from,
+    m: payload.message,
+    ts: payload.timestamp
+  };
+
+  // Step 2: Stringify with no whitespace
+  const jsonStr = JSON.stringify(optimized);
+  console.log('[ENCRYPT TEXT] Optimized JSON size:', jsonStr.length, 'bytes');
+
+  // Step 3: Generate SHA-256 hash for integrity
+  const hash = await generateSHA256(jsonStr);
+  console.log('[ENCRYPT TEXT] Generated SHA-256 hash:', hash.substring(0, 16) + '...');
+
+  // Step 4: Encrypt via Keychain (prefix with # for memo encryption)
+  const messageToEncrypt = `#${jsonStr}`;
+  const encrypted = await requestKeychainEncryption(
+    messageToEncrypt,
+    senderUsername,
+    payload.to
+  );
+
+  console.log('[ENCRYPT TEXT] ✅ Encryption complete, final size:', encrypted.length, 'bytes');
+
+  return { encrypted, hash };
+}
+
+/**
+ * Decrypt an encrypted text message payload
+ * 
+ * Process:
+ * 1. Decrypt via Hive Keychain
+ * 2. Verify integrity hash (if provided)
+ * 3. Parse and expand JSON
+ * 
+ * @param encryptedPayload - Encrypted payload from blockchain
+ * @param username - User's username for decryption
+ * @param expectedHash - Optional SHA-256 hash for verification
+ * @returns Promise<TextPayload>
+ * 
+ * @throws Error if integrity check fails
+ */
+export async function decryptTextPayload(
+  encryptedPayload: string,
+  username: string,
+  expectedHash?: string
+): Promise<TextPayload> {
+  console.log('[DECRYPT TEXT] Starting decryption process:', {
+    username,
+    payloadLength: encryptedPayload.length,
+    hasHash: !!expectedHash
+  });
+
+  // Step 1: Decrypt via Keychain
+  const decrypted = await requestKeychainDecryption(encryptedPayload, username);
+
+  // Step 2: Remove # prefix if present
+  const jsonStr = decrypted.startsWith('#') ? decrypted.substring(1) : decrypted;
+  console.log('[DECRYPT TEXT] Decrypted JSON size:', jsonStr.length, 'bytes');
+
+  // Step 3: Verify integrity if hash provided
+  if (expectedHash) {
+    const actualHash = await generateSHA256(jsonStr);
+    if (actualHash !== expectedHash) {
+      console.error('[DECRYPT TEXT] ❌ Integrity check failed:', {
+        expected: expectedHash.substring(0, 16),
+        actual: actualHash.substring(0, 16)
+      });
+      throw new Error('Integrity check failed - data may be corrupted');
+    }
+    console.log('[DECRYPT TEXT] ✅ Integrity verified');
+  }
+
+  // Step 4: Parse JSON
+  const optimized: OptimizedTextPayload = JSON.parse(jsonStr);
+
+  const payload: TextPayload = {
+    to: optimized.t,
+    from: optimized.f,
+    message: optimized.m,
+    timestamp: optimized.ts
+  };
+
+  console.log('[DECRYPT TEXT] ✅ Decryption complete:', {
+    from: payload.from,
+    to: payload.to,
+    messageLength: payload.message.length
+  });
+
+  return payload;
+}
+```
+
+---
+
+## Step 2: Blockchain Broadcast Function
+
+**File: `client/src/lib/hive.ts`**
+
+Add this function to broadcast custom_json operations to the blockchain:
+
+```typescript
+/**
+ * Broadcast a text message via custom_json operation (FREE - no HBD cost)
+ * 
+ * @param username - Sender's username
+ * @param recipientUsername - Recipient's username
+ * @param encryptedPayload - Encrypted message payload
+ * @param hash - SHA-256 hash of the payload (for integrity)
+ * @returns Promise<string> - Transaction ID
+ */
+export async function broadcastTextMessage(
+  username: string,
+  recipientUsername: string,
+  encryptedPayload: string,
+  hash: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!window.hive_keychain) {
+      reject(new Error('Hive Keychain not installed'));
+      return;
+    }
+
+    // Custom JSON structure for text messages
+    const json = JSON.stringify({
+      type: 'hive_messenger_text',
+      version: '1.0',
+      to: recipientUsername,
+      payload: encryptedPayload,
+      hash: hash
+    });
+
+    console.log('[BROADCAST] Broadcasting custom_json text message:', {
+      from: username,
+      to: recipientUsername,
+      payloadSize: encryptedPayload.length,
+      hash: hash.substring(0, 16) + '...'
+    });
+
+    // Broadcast custom_json operation
+    window.hive_keychain.requestCustomJson(
+      username,
+      'hive_messenger',
+      'Posting',
+      json,
+      'Send encrypted message to ' + recipientUsername,
+      (response: any) => {
+        if (response.success) {
+          console.log('[BROADCAST] ✅ Message sent successfully, txId:', response.result.id);
+          resolve(response.result.id);
+        } else {
+          console.error('[BROADCAST] ❌ Broadcast failed:', response.message);
+          reject(new Error(response.message || 'Broadcast failed'));
+        }
+      }
+    );
+  });
+}
+```
+
+---
+
+## Step 3: Conversation Discovery (Fetching Messages)
+
+**File: `client/src/lib/hive.ts`**
+
+Add this function to scan the blockchain for custom_json messages:
+
+```typescript
+/**
+ * Discover conversations from custom_json operations
+ * 
+ * @param username - User's Hive username
+ * @param limit - Number of operations to scan (default: 200)
+ * @returns Promise<string[]> - Array of partner usernames
+ */
+export async function discoverConversations(
+  username: string,
+  limit: number = 200
+): Promise<string[]> {
+  const client = getClient();
+  const partners = new Set<string>();
+
+  console.log('[DISCOVER] Scanning custom_json operations for conversations:', {
+    username,
+    limit
+  });
+
+  try {
+    // Fetch account history with operation filter for custom_json
+    // Bit 18 (2^18 = 262144) = custom_json operations
+    const history = await client.call('condenser_api', 'get_account_history', [
+      username,
+      -1,
+      limit,
+      262144  // Filter for custom_json operations only
+    ]);
+
+    console.log('[DISCOVER] Retrieved', history.length, 'custom_json operations');
+
+    // Process each operation
+    for (const [, operation] of history) {
+      const opType = operation.op[0];
+      const opData = operation.op[1];
+
+      if (opType === 'custom_json' && opData.id === 'hive_messenger') {
+        try {
+          const json = JSON.parse(opData.json);
+          
+          // Only process hive_messenger_text operations
+          if (json.type === 'hive_messenger_text') {
+            const from = operation.op[1].required_posting_auths?.[0];
+            const to = json.to;
+
+            // Add partner (either sender or recipient, not ourselves)
+            if (from && from !== username) {
+              partners.add(from);
+            }
+            if (to && to !== username) {
+              partners.add(to);
+            }
+          }
+        } catch (e) {
+          // Skip malformed JSON
+          continue;
+        }
+      }
+    }
+
+    console.log('[DISCOVER] Found', partners.size, 'conversation partners');
+    return Array.from(partners);
+
+  } catch (error) {
+    console.error('[DISCOVER] Error discovering conversations:', error);
+    throw error;
+  }
+}
+```
+
+---
+
+## Step 4: Fetching Messages for a Conversation
+
+**File: `client/src/lib/hive.ts`**
+
+Add this function to fetch all messages between two users:
+
+```typescript
+export interface CustomJsonMessage {
+  txId: string;
+  from: string;
+  to: string;
+  encryptedPayload: string;
+  hash: string;
+  timestamp: string;
+  blockNum: number;
+}
+
+/**
+ * Fetch custom_json messages between two users
+ * 
+ * @param username - Current user's username
+ * @param partnerUsername - Partner's username
+ * @param limit - Number of operations to scan (default: 200)
+ * @returns Promise<CustomJsonMessage[]>
+ */
+export async function getCustomJsonMessages(
+  username: string,
+  partnerUsername: string,
+  limit: number = 200
+): Promise<CustomJsonMessage[]> {
+  const client = getClient();
+  const messages: CustomJsonMessage[] = [];
+
+  console.log('[FETCH MESSAGES] Fetching messages between', username, 'and', partnerUsername);
+
+  try {
+    // Fetch from current user's history
+    const userHistory = await client.call('condenser_api', 'get_account_history', [
+      username,
+      -1,
+      limit,
+      262144  // custom_json operations
+    ]);
+
+    // Fetch from partner's history
+    const partnerHistory = await client.call('condenser_api', 'get_account_history', [
+      partnerUsername,
+      -1,
+      limit,
+      262144  // custom_json operations
+    ]);
+
+    // Combine both histories
+    const combinedHistory = [...userHistory, ...partnerHistory];
+
+    // Process operations
+    for (const [opIndex, operation] of combinedHistory) {
+      const opType = operation.op[0];
+      const opData = operation.op[1];
+
+      if (opType === 'custom_json' && opData.id === 'hive_messenger') {
+        try {
+          const json = JSON.parse(opData.json);
+          
+          if (json.type === 'hive_messenger_text') {
+            const from = opData.required_posting_auths?.[0];
+            const to = json.to;
+
+            // Only include messages between these two users
+            if (
+              (from === username && to === partnerUsername) ||
+              (from === partnerUsername && to === username)
+            ) {
+              messages.push({
+                txId: operation.trx_id,
+                from,
+                to,
+                encryptedPayload: json.payload,
+                hash: json.hash,
+                timestamp: operation.timestamp,
+                blockNum: operation.block
+              });
+            }
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+    }
+
+    // Remove duplicates by txId
+    const uniqueMessages = Array.from(
+      new Map(messages.map(m => [m.txId, m])).values()
+    );
+
+    // Sort by timestamp
+    uniqueMessages.sort((a, b) => 
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    console.log('[FETCH MESSAGES] Found', uniqueMessages.length, 'messages');
+    return uniqueMessages;
+
+  } catch (error) {
+    console.error('[FETCH MESSAGES] Error:', error);
+    throw error;
+  }
+}
+```
+
+---
+
+## Step 5: React Hook for Message Management
+
+**File: `client/src/hooks/useBlockchainMessages.ts`**
+
+Key sections for custom_json support:
+
+```typescript
+/**
+ * Fetch and decrypt messages for a conversation
+ */
+const fetchMessages = async (partnerUsername: string) => {
+  if (!username) return [];
+
+  try {
+    // Fetch encrypted messages from blockchain
+    const encryptedMessages = await getCustomJsonMessages(
+      username,
+      partnerUsername,
+      200
+    );
+
+    // Decrypt each message
+    const decryptedMessages = await Promise.all(
+      encryptedMessages.map(async (msg) => {
+        try {
+          const decrypted = await decryptTextPayload(
+            msg.encryptedPayload,
+            username,
+            msg.hash
+          );
+
+          return {
+            txId: msg.txId,
+            from: decrypted.from,
+            to: decrypted.to,
+            message: decrypted.message,
+            timestamp: msg.timestamp,
+            blockNum: msg.blockNum
+          };
+        } catch (error) {
+          console.error('[DECRYPT] Failed to decrypt message:', error);
+          return null;
+        }
+      })
+    );
+
+    return decryptedMessages.filter(m => m !== null);
+  } catch (error) {
+    console.error('[FETCH] Error fetching messages:', error);
+    return [];
+  }
+};
+```
+
+---
+
+## Step 6: Sending a Message (UI Component)
+
+**File: `client/src/components/MessageComposer.tsx`**
+
+Example implementation:
+
+```typescript
+import { encryptTextPayload, TextPayload } from '@/lib/customJsonEncryption';
+import { broadcastTextMessage } from '@/lib/hive';
+
+const handleSendMessage = async () => {
+  if (!message.trim() || !currentUser || !recipientUsername) return;
+
+  try {
+    // Step 1: Create payload
+    const payload: TextPayload = {
+      message: message.trim(),
+      from: currentUser,
+      to: recipientUsername,
+      timestamp: Date.now()
+    };
+
+    // Step 2: Encrypt payload
+    const { encrypted, hash } = await encryptTextPayload(payload, currentUser);
+
+    // Step 3: Broadcast to blockchain
+    const txId = await broadcastTextMessage(
+      currentUser,
+      recipientUsername,
+      encrypted,
+      hash
+    );
+
+    console.log('✅ Message sent! TxId:', txId);
+    
+    // Clear input
+    setMessage('');
+    
+    // Refresh messages
+    // ... trigger refetch
+    
+  } catch (error) {
+    console.error('❌ Failed to send message:', error);
+    // Show error toast
+  }
+};
+```
+
+---
+
+## Step 7: TypeScript Definitions
+
+**File: `client/src/global.d.ts`**
+
+Add Hive Keychain type definitions:
+
+```typescript
+interface Window {
+  hive_keychain?: {
+    requestEncodeMessage: (
+      username: string,
+      receiver: string,
+      message: string,
+      method: 'Memo' | 'Posting',
+      callback: (response: { success: boolean; result?: string; message?: string }) => void
+    ) => void;
+
+    requestVerifyKey: (
+      username: string,
+      encryptedMessage: string,
+      method: 'Memo' | 'Posting',
+      callback: (response: { success: boolean; result?: string; message?: string }) => void
+    ) => void;
+
+    requestCustomJson: (
+      username: string,
+      customJsonId: string,
+      keyType: 'Posting' | 'Active',
+      json: string,
+      displayMessage: string,
+      callback: (response: { success: boolean; result?: { id: string }; message?: string }) => void
+    ) => void;
+  };
+}
+```
+
+---
+
+## Key Configuration Constants
+
+```typescript
+// Operation filters for blockchain queries
+export const OPERATION_FILTERS = {
+  TRANSFER: 4,           // 2^2 = transfer operations
+  CUSTOM_JSON: 262144    // 2^18 = custom_json operations
+};
+
+// Custom JSON ID
+export const CUSTOM_JSON_ID = 'hive_messenger';
+
+// Message types
+export const MESSAGE_TYPES = {
+  TEXT: 'hive_messenger_text',
+  IMAGE: 'hive_messenger_image'
+};
+```
+
+---
+
+## Complete Workflow Summary
+
+### Sending a Message
+1. User types message in UI
+2. Create `TextPayload` object with message, from, to, timestamp
+3. Call `encryptTextPayload()` → returns encrypted string + hash
+4. Call `broadcastTextMessage()` → broadcasts to Hive blockchain
+5. Message stored on blockchain as custom_json operation (FREE)
+
+### Receiving Messages
+1. Call `discoverConversations()` → scans custom_json ops, returns partner usernames
+2. For each conversation, call `getCustomJsonMessages()` → fetches encrypted messages
+3. For each message, call `decryptTextPayload()` → decrypts with Keychain
+4. Display decrypted messages in UI
+5. Cache in IndexedDB for offline access
+
+---
+
+## Testing Checklist
+
+- [ ] Message encrypts successfully
+- [ ] Message broadcasts to blockchain (check txId in console)
+- [ ] Message appears on Hive block explorer
+- [ ] Conversation discovered automatically
+- [ ] Messages decrypt correctly
+- [ ] No HBD cost (only RC consumed)
+- [ ] Works offline after initial load (IndexedDB cache)
+
+---
+
+## Common Issues & Solutions
+
+### Issue: `requestDecode is not a function`
+**Solution:** Use `requestVerifyKey` for decryption, not `requestDecode`
+
+### Issue: Messages not appearing
+**Solution:** Clear service worker cache, do hard reload
+
+### Issue: Encryption fails
+**Solution:** Ensure message starts with `#` prefix before encryption
+
+### Issue: No conversations found
+**Solution:** Check operation filter is 262144 (custom_json), not 4 (transfer)
+
+---
+
+## Performance Optimizations
+
+1. **Operation Filter**: Use `262144` to fetch only custom_json ops (10-100x faster)
+2. **Limit Operations**: Start with 50-200 operations, not 1000
+3. **Cache Everything**: Store decrypted messages in IndexedDB
+4. **Parallel Decryption**: Decrypt messages in parallel using `Promise.all()`
+5. **Incremental Sync**: Track last synced operation ID, only fetch newer
+
+---
+
+## Security Notes
+
+- ✅ Uses same encryption as Hive memo transfers (ECDH + AES-256-CBC)
+- ✅ Private keys never leave Keychain extension
+- ✅ SHA-256 hash verifies message integrity
+- ✅ Messages encrypted client-side before blockchain broadcast
+- ✅ Only sender and recipient can decrypt (end-to-end encryption)
+
+---
+
+## Resources
+
+- **Hive Keychain Documentation**: https://github.com/hive-keychain/hive-keychain
+- **Hive API Docs**: https://developers.hive.io/
+- **Operation Filters**: https://developers.hive.io/apidefinitions/
+
+---
+
+**Last Updated:** November 14, 2025
+**Version:** 1.0 - Custom JSON Implementation
