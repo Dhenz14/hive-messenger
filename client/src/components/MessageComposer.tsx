@@ -54,13 +54,13 @@ export function MessageComposer({
     isError: isErrorMinimum,
   } = useRecipientMinimum(recipientUsername);
   
-  // v2.2.0: Send amount state (initialize to 0.000 for FREE custom_json messaging)
-  const [sendAmount, setSendAmount] = useState("0.000");
+  // v2.2.0: Send amount state (initialize to empty for FREE custom_json messaging)
+  const [sendAmount, setSendAmount] = useState("");
   
   // Update send amount when recipient minimum changes (after loading)
-  // Only auto-update if user hasn't changed from default 0.000
+  // Only auto-update if user hasn't entered an amount
   useEffect(() => {
-    if (!isLoadingMinimum && recipientMinimum && sendAmount === "0.000") {
+    if (!isLoadingMinimum && recipientMinimum && !sendAmount) {
       setSendAmount(recipientMinimum);
     }
   }, [recipientMinimum, isLoadingMinimum, sendAmount]);
@@ -307,7 +307,8 @@ export function MessageComposer({
     }
     
     // v2.2.0: Dual-path validation - support FREE custom_json (0.000) and optional HBD transfers
-    const numericSendAmount = parseFloat(sendAmount);
+    // Treat empty string as 0 for FREE messaging
+    const numericSendAmount = sendAmount === "" ? 0 : parseFloat(sendAmount);
     
     // Step 2a: Validate numeric format and precision
     if (isNaN(numericSendAmount)) {
@@ -662,8 +663,8 @@ export function MessageComposer({
               <span className="text-caption text-muted-foreground">HBD</span>
             </div>
             
-            {/* v2.2.0: Show FREE messaging indicator when amount is 0 */}
-            {parseFloat(sendAmount) === 0 && (
+            {/* v2.2.0: Show FREE messaging indicator when amount is empty or 0 */}
+            {(!sendAmount || parseFloat(sendAmount) === 0) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-md" data-testid="alert-free-messaging">
                 <CheckCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span className="text-caption text-blue-700 dark:text-blue-300">
@@ -673,7 +674,7 @@ export function MessageComposer({
             )}
             
             {/* v2.1.0: Show exemption/minimum warnings only when amount > 0 */}
-            {parseFloat(sendAmount) > 0 && !isLoadingMinimum && recipientMinimum && parseFloat(sendAmount) < parseFloat(recipientMinimum) && (
+            {sendAmount && parseFloat(sendAmount) > 0 && !isLoadingMinimum && recipientMinimum && parseFloat(sendAmount) < parseFloat(recipientMinimum) && (
               <>
                 {parseFloat(sendAmount) === parseFloat(DEFAULT_MINIMUM_HBD) ? (
                   <div className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-md" data-testid="alert-exemption-indicator">
@@ -693,7 +694,7 @@ export function MessageComposer({
               </>
             )}
             
-            {parseFloat(sendAmount) > 0 && !isLoadingMinimum && recipientMinimum && recipientMinimum !== DEFAULT_MINIMUM_HBD && parseFloat(sendAmount) >= parseFloat(recipientMinimum) && (
+            {sendAmount && parseFloat(sendAmount) > 0 && !isLoadingMinimum && recipientMinimum && recipientMinimum !== DEFAULT_MINIMUM_HBD && parseFloat(sendAmount) >= parseFloat(recipientMinimum) && (
               <div className="flex items-center gap-2 text-caption text-muted-foreground">
                 <Info className="w-3 h-3" />
                 <span>@{recipientUsername}'s minimum: {recipientMinimum} HBD</span>
