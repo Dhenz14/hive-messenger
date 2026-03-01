@@ -1,0 +1,385 @@
+# Hive Messenger - Cursor AI Rules
+
+## Project Overview
+
+Hive Messenger is a **100% decentralized, end-to-end encrypted messaging PWA** built on the Hive blockchain. There is NO backend server, NO database, NO sessions, NO API keys stored server-side. Every operation is client-side. Authentication is exclusively via Hive Keychain (browser extension / mobile app).
+
+## Core Principles (Never Violate These)
+
+1. **Zero centralization** - All logic is client-side. Never add a backend endpoint for user data.
+2. **Private keys never leave Keychain** - Never request, store, or transmit private keys.
+3. **All messages encrypted before broadcast** - Never send plaintext to the blockchain.
+4. **IndexedDB is local cache only** - Blockchain is the source of truth.
+5. **No optimistic updates for messages** - Wait for blockchain confirmation to avoid duplicates.
+
+---
+
+## Tech Stack
+
+- **Frontend:** React 18, TypeScript, Vite
+- **Styling:** Tailwind CSS v3, Shadcn UI (Radix), `lucide-react` icons
+- **State/Fetching:** TanStack React Query v5
+- **Routing:** Wouter
+- **Blockchain:** `@hiveio/dhive` for Hive RPC calls
+- **Auth:** `keychain-sdk` (Hive Keychain)
+- **Local Cache:** IndexedDB via `idb`
+- **Encryption:** Hive memo keys (ECDH + AES-256-CBC) via Keychain
+- **Lightning:** `lnurl-pay`, `light-bolt11-decoder`, `qrcode`
+- **Compression:** `pako` (deflate/inflate for message payloads)
+- **Forms:** react-hook-form + zod
+
+---
+
+## File Structure
+
+```
+/
+├── client/src/
+│   ├── components/          # All UI components
+│   │   ├── ui/              # Shadcn base components (DO NOT edit)
+│   │   ├── MessageBubble.tsx
+│   │   ├── MessageComposer.tsx
+│   │   ├── ConversationsList.tsx
+│   │   ├── ChatHeader.tsx
+│   │   ├── SettingsModal.tsx
+│   │   ├── Login.tsx
+│   │   └── lightning/       # Lightning tip components
+│   ├── contexts/            # React contexts
+│   │   ├── AuthContext.tsx          # User auth state
+│   │   ├── ThemeContext.tsx         # Dark/light mode
+│   │   ├── ExceptionsContext.tsx    # HBD whitelist
+│   │   └── HiddenConversationsContext.tsx
+│   ├── hooks/               # Custom React hooks
+│   │   ├── useBlockchainMessages.ts # Core polling + message fetching
+│   │   ├── useCustomJsonMessages.ts
+│   │   ├── useExceptionsList.ts
+│   │   ├── useMinimumHBD.ts
+│   │   └── useRecipientMinimum.ts
+│   ├── lib/                 # Core libraries
+│   │   ├── hive.ts                  # Blockchain API calls
+│   │   ├── hiveClient.ts            # RPC node management + health scoring
+│   │   ├── messageCache.ts          # IndexedDB cache
+│   │   ├── customJsonEncryption.ts  # custom_json encrypt/decrypt
+│   │   ├── accountMetadata.ts       # On-chain profile metadata
+│   │   ├── lightning.ts             # Lightning Network integration
+│   │   ├── logger.ts                # Structured logger
+│   │   ├── compression.ts           # pako compression helpers
+│   │   └── queryClient.ts           # React Query setup
+│   ├── pages/
+│   │   ├── Messages.tsx     # Main chat page
+│   │   └── not-found.tsx
+│   └── App.tsx              # Root component + routing
+├── server/                  # Minimal Express server (serves frontend only)
+├── shared/                  # Shared types (schema.ts)
+├── replit.md                # Project memory / architecture notes
+├── .cursorrules             # This file
+└── vite.config.ts           # Path aliases: @/ @shared/ @assets/
+```
+
+---
+
+## Path Aliases
+
+```typescript
+@/          → client/src/
+@shared/    → shared/
+@assets/    → attached_assets/
+```
+
+---
+
+## Key Patterns
+
+### 1. Sending a Message (custom_json - FREE)
+
+```typescript
+// In hive.ts
+import { broadcastCustomJsonText } from '@/lib/hive';
+
+// Text messages use custom_json (0.000 HBD cost)
+await broadcastCustomJsonText({
+  from: username,
+  to: partnerUsername,
+  encryptedPayload: encryptedText,  // Always encrypted via Keychain
+  hash: sha256Hash,                  // SHA-256 integrity check
+});
+```
+
+### 2. Fetching Messages (Hybrid - legacy + new)
+
+```typescript
+// Always fetch BOTH types and merge chronologically
+const [transferMsgs, customJsonMsgs] = await Promise.all([
+  getConversationMessages(user, partner, 200),       // Legacy memo transfers
+  getCustomJsonTextMessages(user, partner, 200),     // New custom_json texts
+]);
+// Merge by txId, sort by timestamp
+```
+
+### 3. Decrypting a Message
+
+```typescript
+// Check messageType discriminator to pick decryption path
+if (message.messageType === 'customJsonText') {
+  const plaintext = await decryptTextPayload(encryptedPayload, hash);
+} else {
+  // Legacy memo
+  const plaintext = await decryptMemo(username, encryptedMemo, partner);
+}
+```
+
+### 4. Encrypting via Keychain
+
+```typescript
+// NEVER encrypt manually - always go through Keychain
+const sdk = new KeychainSDK(window);
+const result = await sdk.encode(username, recipientUsername, message, 'Memo');
+// result.result is the encrypted string
+```
+
+### 5. Caching Messages
+
+```typescript
+import { cacheMessage, cacheMessages, getMessagesByConversation } from '@/lib/messageCache';
+
+// Single message
+await cacheMessage(messageCache, username);
+
+// Batch (preferred for performance)
+await cacheMessages(messageCacheArray, username);
+
+// Retrieve
+const cached = await getMessagesByConversation(username, partnerUsername);
+```
+
+### 6. Triggering Fast Polling After Send
+
+```typescript
+import { triggerFastPolling } from '@/hooks/useBlockchainMessages';
+
+// Always call this after broadcasting a message
+await broadcastMessage(...);
+triggerFastPolling(); // Switches to 3-second polling for 15 seconds
+```
+
+### 7. Account Metadata (on-chain profile)
+
+```typescript
+import { getAccountMetadata, setAccountMetadata } from '@/lib/accountMetadata';
+
+// Read
+const metadata = await getAccountMetadata(username);
+const minHBD = parseMinimumHBD(metadata);
+
+// Write (broadcasts custom_json to blockchain)
+await setAccountMetadata(username, { lightning_address: 'user@getalby.com' });
+```
+
+---
+
+## Message Data Model
+
+```typescript
+interface MessageCache {
+  id: string;                              // txId from blockchain
+  conversationKey: string;                 // "userA:userB" (sorted)
+  from: string;                            // sender username
+  to: string;                              // recipient username
+  content: string;                         // decrypted text (or placeholder)
+  encryptedContent: string;               // raw encrypted payload
+  timestamp: string;                       // ISO 8601 UTC (always 'Z' suffix)
+  txId: string;                            // blockchain transaction ID
+  confirmed: boolean;                      // always true (no optimistic)
+  amount?: string;                         // "0.001 HBD" for legacy
+  hidden?: boolean;                        // filtered by minimum HBD
+  messageType: 'memo' | 'customJsonText'; // discriminator
+  hash?: string;                           // SHA-256 for customJsonText
+  isDecrypted?: boolean;                   // true once user decrypted
+}
+```
+
+---
+
+## Adaptive Polling System
+
+The `useBlockchainMessages` hook uses 4 polling modes:
+
+| Mode | Interval | Trigger |
+|------|----------|---------|
+| Burst | 3s | Right after user sends (15s window) |
+| Active | 5s | Mouse/keyboard activity in last 60s |
+| Idle | 15s | No activity for 60+ seconds |
+| Background | 45s | Tab hidden (Page Visibility API) |
+
+**React Query config:**
+- `staleTime`: 12000ms (serve cached, avoid redundant fetches)
+- `gcTime`: 300000ms (5 min memory retention)
+- `refetchOnWindowFocus`: 'always' (fresh data on tab return)
+
+---
+
+## Conversation Discovery
+
+```typescript
+// discoverConversations scans the user's OWN account history
+// The blockchain records all transfers/custom_json involving your account
+// So first-contact messages ARE automatically discovered (no follow list needed)
+
+const partners = await discoverConversations(username, 200);
+// Returns [{ username: 'alice', lastTimestamp: '...' }, ...]
+```
+
+**Two-phase discovery:**
+- Phase 1: Last 50 operations (quick, ~5s) → Renders sidebar immediately
+- Phase 2: Last 200 operations (full, background) → Fills in older conversations
+
+---
+
+## Custom JSON IDs
+
+```typescript
+'hive-messenger-text'   // Text message
+'hive-messenger-img'    // Image message (chunked)
+'hive-messenger-meta'   // Profile metadata (lightning address, min HBD, etc.)
+```
+
+---
+
+## Minimum HBD Filter
+
+- Only applies to **legacy memo-based messages** (`messageType === 'memo'`)
+- **custom_json text messages are always visible** (bypass filter)
+- Exceptions list (localStorage) whitelists trusted contacts
+- Setting stored on-chain: `{ key: 'minimum_hbd', value: '0.010 HBD' }`
+
+---
+
+## RPC Node Management
+
+```typescript
+// In hiveClient.ts - Never hardcode a single node
+const HIVE_NODES = [
+  'https://api.hive.blog',
+  'https://api.hivekings.com',
+  'https://anyx.io',
+  'https://api.openhive.network',
+];
+// Health scored automatically, failover is transparent
+```
+
+---
+
+## Logger
+
+```typescript
+import { logger } from '@/lib/logger';
+
+logger.info('[COMPONENT] Descriptive message', { data });
+logger.warn('[COMPONENT] Warning', error);
+logger.error('[COMPONENT] Error', error);
+logger.sensitive('[COMPONENT] Contains private data'); // Stripped in production
+```
+
+---
+
+## Authentication Flow
+
+```typescript
+const { user, login, logout } = useAuth();
+
+// user is null when not logged in
+// user.username is the Hive account name
+// Never access user.privateKey - it doesn't exist
+```
+
+**Platform detection:**
+- Desktop: Checks `window.hive_keychain` (browser extension)
+- Mobile: Checks Keychain Mobile in-app browser via user agent
+- Regular mobile browser: Redirects to `hive://browser?url=...`
+
+---
+
+## Lightning Network Integration
+
+```typescript
+// Three payment paths (all in lightning.ts):
+// 1. V4V.app HBD bridge → sends HBD transfer to @v4v.app
+// 2. Manual → generate BOLT11 invoice, user pays externally
+// 3. WebLN → window.webln.sendPayment(bolt11)
+
+// Always validate invoice before payment:
+import { validateBolt11Invoice } from '@/lib/lightning';
+const valid = validateBolt11Invoice(invoice, expectedSats);
+```
+
+---
+
+## Conventions
+
+### Do
+- Use `@/` imports everywhere (not relative paths)
+- Use Shadcn components from `@/components/ui/`
+- Use `lucide-react` for all icons
+- Always normalize timestamps to UTC: `new Date().toISOString()` (ends in 'Z')
+- Batch IndexedDB writes: use `cacheMessages()` not multiple `cacheMessage()`
+- Always handle the case where Keychain is not installed
+- Use `logger` instead of `console.log` in production code
+- Keep blockchain operations in `lib/hive.ts`
+- Keep cache operations in `lib/messageCache.ts`
+
+### Don't
+- Don't add new Express routes for user data (violates decentralization)
+- Don't store private keys anywhere
+- Don't use optimistic updates for messages (causes duplicates)
+- Don't send plaintext to the blockchain
+- Don't hardcode a single RPC node URL
+- Don't use `console.log` for sensitive data
+- Don't edit files in `client/src/components/ui/` (Shadcn base)
+- Don't edit `vite.config.ts` or `drizzle.config.ts`
+- Don't add dependencies without checking if already bundled
+
+---
+
+## Environment
+
+- **Dev:** `npm run dev` → Express serves frontend + backend on port 5000
+- **Build:** `npm run build` → Vite builds frontend, esbuild bundles server
+- **No .env file needed** - No API keys required (CoinGecko is free, no auth)
+
+---
+
+## Common Tasks
+
+### Add a new on-chain metadata field
+1. Add to `accountMetadata.ts` → `setAccountMetadata` / `getAccountMetadata`
+2. Broadcast via `custom_json` with id `hive-messenger-meta`
+3. Read by scanning account history for that custom_json id
+
+### Add a new message type
+1. Add discriminator to `MessageCache.messageType`
+2. Add custom_json ID constant
+3. Add broadcast function in `hive.ts`
+4. Add fetch function in `hive.ts`
+5. Add cache handling in `messageCache.ts`
+6. Add decryption path in `MessageBubble.tsx`
+7. Add render path in `MessageBubble.tsx`
+
+### Add a new settings field
+1. Add UI in `SettingsModal.tsx`
+2. Store locally: `localStorage.setItem()`
+3. Or store on-chain: `setAccountMetadata()`
+4. Read in relevant hook (e.g. `useMinimumHBD.ts`)
+
+---
+
+## Notes for AI Assistants (Cursor)
+
+- The app is 100% client-side for user data - don't suggest adding server routes
+- Hive Keychain is the ONLY authentication method - don't suggest password/email auth
+- `window.hive_keychain` is the extension API - always check if it exists first
+- All Hive usernames are lowercase letters, numbers, and hyphens only
+- HBD amounts always have 3 decimal places: "0.001 HBD"
+- Blockchain timestamps are UTC but may arrive without 'Z' - always normalize
+- The `conversationKey` is always the two usernames sorted alphabetically and joined with ':'
+- `txId` from the blockchain is the unique message ID - never generate your own
+- IndexedDB keys are namespaced by username to support multi-account
