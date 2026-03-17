@@ -87,8 +87,8 @@ export const MessageBubble = memo(function MessageBubble({ message, isSent, show
         
         const textPayload = await decryptTextPayload(
           message.encryptedMemo,
-          message.hash || '',
-          user.username
+          user.username,
+          message.hash || undefined
         );
         
         if (textPayload) {
