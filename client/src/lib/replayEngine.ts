@@ -192,6 +192,13 @@ async function crawlHistory(
     if (!page || page.length === 0) break;
     pageCount++;
 
+    // Update progress during full sync (estimate based on pages fetched)
+    if (isFullSync && pageCount > 1) {
+      // Estimate: most accounts have <10 pages, cap at 20 for progress calc
+      const estimatedProgress = Math.min(pageCount / 20, 0.95) * 100;
+      setSyncStatus('full-resync', Math.round(estimatedProgress));
+    }
+
     for (const [idx, entry] of page) {
       // Stop once we hit already-processed entries
       if (idx <= lastIndex) {

@@ -209,16 +209,6 @@ export const filterEncryptedMessages = (history: any[], currentUser: string) => 
     }));
 };
 
-export const formatHiveAmount = (amount: string): string => {
-  const parts = amount.split(' ');
-  if (parts.length !== 2) return amount;
-  
-  const value = parseFloat(parts[0]);
-  const currency = parts[1];
-  
-  return `${value.toFixed(3)} ${currency}`;
-};
-
 export const getHiveMemoKey = async (username: string): Promise<string | null> => {
   const account = await getAccount(username);
   return account?.memo_key || null;
@@ -828,14 +818,16 @@ export async function getCustomJsonMessages(
       // Sort by index with explicit types
       chunks.sort((a: ChunkType, b: ChunkType) => a.idx - b.idx);
       
-      // Check if we have all chunks with explicit types
-      const expectedChunks = chunks.length;
-      const hasAllChunks = chunks.every((c: ChunkType, i: number) => c.idx === i);
-      
+      // Validate chunk sequence: indices must be 0, 1, 2, ... with no gaps
+      const maxIdx = Math.max(...chunks.map((c: ChunkType) => c.idx));
+      const hasAllChunks = chunks.length === maxIdx + 1 &&
+        chunks.every((c: ChunkType, i: number) => c.idx === i);
+
       if (!hasAllChunks) {
-        logger.warn('[CUSTOM JSON] Incomplete chunks for session:', sessionId, 
-          'expected:', expectedChunks, 'have indices:', chunks.map((c: ChunkType) => c.idx));
-        return; // Skip this session
+        logger.warn('[CUSTOM JSON] Incomplete/missing chunks for session:', sessionId,
+          'have', chunks.length, 'chunks, max idx:', maxIdx,
+          'indices:', chunks.map((c: ChunkType) => c.idx));
+        return; // Skip this session — missing chunks
       }
       
       // Concatenate chunks with explicit types

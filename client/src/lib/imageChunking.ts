@@ -39,7 +39,10 @@ export function chunkEncryptedPayload(
   encrypted: string,
   hash: string
 ): { sessionId: string; chunks: Chunk[] } {
-  const sessionId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  // Use crypto.randomUUID for collision-resistant session IDs (or fallback)
+  const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID().replace(/-/g, '').substring(0, 16)
+    : `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
   const chunks: Chunk[] = [];
   
   for (let i = 0; i < encrypted.length; i += CHUNK_SIZE) {

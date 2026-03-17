@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, Smile, X, Image as ImageIcon, DollarSign, Info, CheckCircle } from 'lucide-react';
+import { Send, Paperclip, X, Image as ImageIcon, DollarSign, Info, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
@@ -735,16 +735,6 @@ export function MessageComposer({
               data-testid="input-message-content"
             />
             <div className="absolute right-2 bottom-2 flex items-center gap-1">
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="min-h-11 min-w-11"
-                disabled={disabled}
-                data-testid="button-emoji"
-              >
-                <Smile className="w-4 h-4" />
-              </Button>
               <input
                 ref={fileInputRef}
                 type="file"

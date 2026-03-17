@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { LogOut, Moon, Sun, User, Shield, Bell, Info, Filter, Lightbulb, Zap } from 'lucide-react';
+import { LogOut, Moon, Sun, User, Shield, Info, Filter, Lightbulb, Zap } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -517,35 +517,13 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
             <Separator />
 
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-body font-medium">
-                <Bell className="w-4 h-4" />
-                <span>Notifications</span>
-              </div>
-              <div className="space-y-3 pl-6">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="sound-notifications" className="text-body cursor-pointer">
-                      Sound Alerts
-                    </Label>
-                    <p className="text-caption text-muted-foreground">
-                      Play sound when new messages arrive
-                    </p>
-                  </div>
-                  <Switch id="sound-notifications" />
-                </div>
-              </div>
-            </div>
-
-            <Separator />
-
             <div className="space-y-4 pb-4">
               <div className="flex items-center gap-2 text-body font-medium">
                 <Info className="w-4 h-4" />
                 <span>About</span>
               </div>
               <div className="space-y-2 pl-6 text-caption text-muted-foreground">
-                <p>Hive Messenger v2.1.0</p>
+                <p>Hive Messenger v3.0.0</p>
                 <p>
                   Encrypted messaging with exceptions list and auto-decrypt
                 </p>

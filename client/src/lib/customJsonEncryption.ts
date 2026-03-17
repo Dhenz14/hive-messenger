@@ -1,5 +1,3 @@
-import { gzipCompress, gzipDecompress } from './compression';
-
 /**
  * Custom JSON encryption module for Hive Messenger
  * Handles payload optimization, encryption, and integrity verification

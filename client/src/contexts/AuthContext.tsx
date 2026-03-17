@@ -64,6 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const account = await getAccount(session.username);
         if (account) {
           setUser(session);
+          stopSync(); // Ensure no duplicate sync from previous session
           startSync(session.username);
           console.log('[Auth] Session restored for:', session.username);
         } else {
@@ -128,6 +129,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     
     // Start replay engine sync for full history crawl
+    stopSync(); // Clear any previous sync
     startSync(username);
 
     console.log('[Auth] ✅ Login complete! Session stored locally.');

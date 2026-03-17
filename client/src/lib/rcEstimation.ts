@@ -1,11 +1,15 @@
-import { Client } from '@hiveio/dhive';
+import { hiveClient as hiveClientInstance } from './hive';
 
 /**
  * Resource Credits (RC) estimation and warning system
  * Prevents failed transactions due to insufficient RC
- * 
+ *
  * @module rcEstimation
  */
+
+// Cache RC results for 10 seconds (RC regenerates slowly)
+let _rcCache: { username: string; info: RCInfo; fetchedAt: number } | null = null;
+const RC_CACHE_TTL_MS = 10_000;
 
 /**
  * RC account information
@@ -35,15 +39,15 @@ export const RC_COSTS = {
  * @returns Promise<RCInfo> - RC information
  */
 export async function getAccountRC(username: string): Promise<RCInfo> {
-  try {
-    const client = new Client([
-      'https://api.hive.blog',
-      'https://api.deathwing.me',
-      'https://hive-api.arcange.eu'
-    ]);
+  // Return cached result if fresh
+  if (_rcCache && _rcCache.username === username &&
+      Date.now() - _rcCache.fetchedAt < RC_CACHE_TTL_MS) {
+    return _rcCache.info;
+  }
 
-    // Use rc_api to get accurate Resource Credits information
-    const rcAccounts = await client.call('rc_api', 'find_rc_accounts', {
+  try {
+    // Reuse the existing Hive client instead of creating a new one
+    const rcAccounts = await hiveClientInstance.database.call('rc_api', 'find_rc_accounts', {
       accounts: [username]
     });
 
@@ -52,22 +56,22 @@ export async function getAccountRC(username: string): Promise<RCInfo> {
     }
 
     const rcAccount = rcAccounts.rc_accounts[0];
-    const currentMana = parseInt(rcAccount.rc_manabar.current_mana);
-    const maxMana = parseInt(rcAccount.max_rc);
-    
-    const percentage = (currentMana / maxMana) * 100;
-    
-    console.log('[RC] Retrieved RC info:', {
-      current: currentMana,
-      max: maxMana,
-      percentage: percentage.toFixed(2) + '%'
-    });
-    
-    return {
+    // Use Number() which handles large values better than parseInt
+    const currentMana = Number(rcAccount.rc_manabar.current_mana);
+    const maxMana = Number(rcAccount.max_rc);
+
+    const percentage = maxMana > 0 ? (currentMana / maxMana) * 100 : 0;
+
+    const info: RCInfo = {
       current: currentMana,
       max: maxMana,
       percentage: parseFloat(percentage.toFixed(2))
     };
+
+    // Cache result
+    _rcCache = { username, info, fetchedAt: Date.now() };
+
+    return info;
   } catch (error) {
     console.error('[RC] Failed to fetch RC info:', error);
     throw new Error('Failed to get RC information');

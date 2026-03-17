@@ -8,7 +8,7 @@
  * Feature: Exceptions List (v2.1.0) - Centralized State Fix
  */
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 
 /**
@@ -57,7 +57,8 @@ export function ExceptionsProvider({ children }: ExceptionsProviderProps) {
   const { user } = useAuth();
   const [exceptions, setExceptions] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  
+  const initialLoadDoneRef = useRef(false);
+
   // Load exceptions from localStorage on mount or user change
   useEffect(() => {
     if (!user?.username) {
@@ -89,16 +90,21 @@ export function ExceptionsProvider({ children }: ExceptionsProviderProps) {
     }
   }, [user?.username]);
   
-  // Save exceptions to localStorage whenever they change
+  // Save exceptions to localStorage whenever they change (skip initial load)
   useEffect(() => {
     if (!user?.username || isLoading) return;
-    
+
+    // Skip the first run after loading (avoids dispatching event on mount)
+    if (!initialLoadDoneRef.current) {
+      initialLoadDoneRef.current = true;
+      return;
+    }
+
     try {
       const key = getExceptionsKey(user.username);
       localStorage.setItem(key, JSON.stringify(exceptions));
-      console.log('[ExceptionsContext] Saved exceptions:', exceptions);
-      
-      // Dispatch custom event to notify blockchain messages hook to re-evaluate
+
+      // Only dispatch event on user-initiated changes (not initial load)
       window.dispatchEvent(new CustomEvent('exceptionsChanged', {
         detail: { exceptions, username: user.username }
       }));

@@ -146,11 +146,6 @@ class HiveBlockchainClient {
     }
 
     const bestNode = healthyNodes[0];
-    console.log('[RPC] Selected best node:', bestNode.url, {
-      avgLatency: Math.round(bestNode.avgLatency),
-      successRate: (bestNode.successRate * 100).toFixed(1) + '%',
-    });
-
     return bestNode.url;
   }
 
@@ -208,13 +203,6 @@ class HiveBlockchainClient {
     }
 
     throw lastError || new Error('Operation failed after retries');
-  }
-
-  private rotateToNextNode(): void {
-    // Deprecated: Now using selectBestNode() for intelligent selection
-    // Kept for backwards compatibility
-    this.currentNodeIndex = (this.currentNodeIndex + 1) % this.apiNodes.length;
-    this.client = new Client([this.apiNodes[this.currentNodeIndex]]);
   }
 
   getNodeHealthStats(): Map<string, NodeHealth> {
