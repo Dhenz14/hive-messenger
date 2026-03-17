@@ -1,3 +1,4 @@
+import { useMemo, useCallback } from 'react';
 import { Search, Plus, ShieldCheck } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -33,8 +34,11 @@ export function ConversationsList({
 }: ConversationsListProps) {
   const { isException } = useExceptionsList();
   
-  const filteredConversations = conversations.filter(conv =>
-    conv.contactUsername.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredConversations = useMemo(() =>
+    conversations.filter(conv =>
+      conv.contactUsername.toLowerCase().includes(searchQuery.toLowerCase())
+    ),
+    [conversations, searchQuery]
   );
 
   const getInitials = (username: string) => {

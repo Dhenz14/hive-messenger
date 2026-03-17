@@ -218,7 +218,9 @@ export default function Messages() {
   }, [isFetchingConversations, isFetchingMessages]);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    });
   };
 
   useEffect(() => {
@@ -551,12 +553,13 @@ export default function Messages() {
 
                   const isSent = message.sender === user?.username;
                   return (
-                    <MessageBubble
-                      key={message.id}
-                      message={message}
-                      isSent={isSent}
-                      showTimestamp={showTimestamp}
-                    />
+                    <div key={message.id} className="animate-message-in">
+                      <MessageBubble
+                        message={message}
+                        isSent={isSent}
+                        showTimestamp={showTimestamp}
+                      />
+                    </div>
                   );
                 })
               )}

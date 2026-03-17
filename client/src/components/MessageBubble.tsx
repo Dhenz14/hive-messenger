@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { Lock, Check, CheckCheck, Clock, Unlock, ExternalLink, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Message } from '@shared/schema';
@@ -45,7 +45,7 @@ interface MessageBubbleProps {
   showTimestamp?: boolean;
 }
 
-export function MessageBubble({ message, isSent, showAvatar, showTimestamp }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, isSent, showAvatar, showTimestamp }: MessageBubbleProps) {
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -299,7 +299,7 @@ export function MessageBubble({ message, isSent, showAvatar, showTimestamp }: Me
       </div>
     </div>
   );
-}
+});
 
 interface SystemMessageProps {
   text: string;

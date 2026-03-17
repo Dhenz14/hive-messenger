@@ -330,10 +330,10 @@
     pointer-events: none;
     position: absolute;
     inset: 0px;
-    /*border-radius: inherit;   match rounded corners */
     border-radius: inherit;
     z-index: 999;
-    /* sits in front of content */
+    background-color: transparent;
+    transition: background-color 0.15s ease-out;
   }
 
   .hover-elevate:hover:not(.no-default-hover-elevate)::after,
@@ -354,4 +354,70 @@
   .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
     inset: -1px;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Global UI polish — smooth transitions, message animations
+--------------------------------------------------------------------------- */
+
+/* Smooth scroll in chat area */
+.scroll-smooth {
+  scroll-behavior: smooth;
+}
+
+/* Message entrance animation */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-message-in {
+  animation: message-in 0.2s ease-out;
+}
+
+/* Subtle fade for conversation items */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+
+/* Smooth button transitions */
+button,
+[role="button"] {
+  transition: opacity 0.15s ease-out, transform 0.1s ease-out;
+}
+
+button:active:not(:disabled),
+[role="button"]:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Textarea smooth resize */
+textarea {
+  transition: height 0.1s ease-out;
+}
+
+/* Conversation list item hover */
+.conversation-item {
+  transition: background-color 0.15s ease-out;
+}
+
+/* Decrypt button pulse */
+@keyframes subtle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.animate-subtle-pulse {
+  animation: subtle-pulse 2s ease-in-out infinite;
 }

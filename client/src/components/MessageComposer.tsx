@@ -584,6 +584,8 @@ export function MessageComposer({
       });
     } finally {
       setIsSending(false);
+      // Re-focus textarea so user can immediately type next message
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
   };
 
