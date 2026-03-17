@@ -53,6 +53,35 @@ interface CustomJsonMessage {
   confirmed: boolean;
 }
 
+// REPLAY ENGINE: Sync cursor for tracking replay progress per account
+export interface SyncCursor {
+  account: string;
+  lastTransferIndex: number;    // highest account-history index for transfer ops
+  lastCustomJsonIndex: number;  // highest account-history index for custom_json ops
+  lastSyncedAt: number;         // unix ms
+  fullSyncComplete: boolean;    // whether initial full backward crawl finished
+}
+
+// REPLAY ENGINE: Indexed operation metadata stored during replay
+export interface IndexedOp {
+  key: string;                  // `${account}:${historyIndex}`
+  account: string;
+  historyIndex: number;
+  opType: 'transfer' | 'custom_json_text' | 'custom_json_img';
+  txId: string;
+  from: string;
+  to: string;
+  conversationKey: string;      // sorted `from-to` for index lookups
+  timestamp: string;
+  block: number;
+  payload: string;              // encrypted memo or custom_json 'e' field
+  hash?: string;                // integrity hash for custom_json
+  amount?: string;              // HBD amount for transfers
+  sessionId?: string;           // for multi-chunk image reassembly
+  chunkIndex?: number;
+  totalChunks?: number;
+}
+
 interface HiveMessengerDB extends DBSchema {
   messages: {
     key: string;
@@ -92,6 +121,22 @@ interface HiveMessengerDB extends DBSchema {
       'by-sessionId': string;
     };
   };
+  // REPLAY ENGINE: Sync cursor per account
+  syncCursors: {
+    key: string;
+    value: SyncCursor;
+  };
+  // REPLAY ENGINE: Indexed operations from full history crawl
+  indexedOps: {
+    key: string;
+    value: IndexedOp;
+    indexes: {
+      'by-account': string;
+      'by-txId': string;
+      'by-timestamp': string;
+      'by-conversation': string;
+    };
+  };
 }
 
 let dbInstance: IDBPDatabase<HiveMessengerDB> | null = null;
@@ -115,8 +160,10 @@ async function getDB(username?: string): Promise<IDBPDatabase<HiveMessengerDB>> 
   // v5: Add customJsonMessages table for image messaging
   const dbName = username ? `hive-messenger-${username}-v5` : 'hive-messenger-v5';
   
-  dbInstance = await openDB<HiveMessengerDB>(dbName, 1, {
-    upgrade(db: IDBPDatabase<HiveMessengerDB>) {
+  // v2: Added syncCursors and indexedOps stores for replay engine
+  dbInstance = await openDB<HiveMessengerDB>(dbName, 2, {
+    upgrade(db: IDBPDatabase<HiveMessengerDB>, oldVersion: number) {
+      // Version 1 stores
       if (!db.objectStoreNames.contains('messages')) {
         const messageStore = db.createObjectStore('messages', { keyPath: 'id' });
         messageStore.createIndex('by-conversation', 'conversationKey');
@@ -146,6 +193,20 @@ async function getDB(username?: string): Promise<IDBPDatabase<HiveMessengerDB>> 
         customJsonStore.createIndex('by-conversation', 'conversationKey');
         customJsonStore.createIndex('by-timestamp', 'timestamp');
         customJsonStore.createIndex('by-sessionId', 'sessionId');
+      }
+
+      // Version 2 stores: Replay engine sync cursors and indexed operations
+      if (!db.objectStoreNames.contains('syncCursors')) {
+        db.createObjectStore('syncCursors', { keyPath: 'account' });
+      }
+
+      if (!db.objectStoreNames.contains('indexedOps')) {
+        const indexedOpsStore = db.createObjectStore('indexedOps', { keyPath: 'key' });
+        indexedOpsStore.createIndex('by-account', 'account');
+        indexedOpsStore.createIndex('by-txId', 'txId');
+        indexedOpsStore.createIndex('by-timestamp', 'timestamp');
+        // Compound conversation key: sorted `from:to` for lookups
+        indexedOpsStore.createIndex('by-conversation', 'conversationKey');
       }
     },
   });
@@ -638,6 +699,82 @@ export async function deleteCustomJsonConversation(
   ]);
   
   console.log('[CUSTOM JSON] ✅ Image conversation deleted from local storage');
+}
+
+// ============================================================================
+// REPLAY ENGINE: Sync Cursor Functions
+// ============================================================================
+
+export async function getSyncCursor(account: string): Promise<SyncCursor | undefined> {
+  const db = await getDB(account);
+  return await db.get('syncCursors', account);
+}
+
+export async function putSyncCursor(cursor: SyncCursor): Promise<void> {
+  const db = await getDB(cursor.account);
+  await db.put('syncCursors', cursor);
+}
+
+// ============================================================================
+// REPLAY ENGINE: Indexed Operations Functions
+// ============================================================================
+
+export async function putIndexedOps(ops: IndexedOp[], username?: string): Promise<void> {
+  if (ops.length === 0) return;
+  const db = await getDB(username);
+  const tx = db.transaction('indexedOps', 'readwrite');
+  await Promise.all([
+    ...ops.map((op) => tx.store.put(op)),
+    tx.done,
+  ]);
+}
+
+export async function getIndexedOpsByAccount(account: string): Promise<IndexedOp[]> {
+  const db = await getDB(account);
+  return await db.getAllFromIndex('indexedOps', 'by-account', account);
+}
+
+export async function getIndexedOpsByConversation(
+  currentUser: string,
+  partnerUsername: string,
+): Promise<IndexedOp[]> {
+  const db = await getDB(currentUser);
+  const conversationKey = getConversationKey(currentUser, partnerUsername);
+  const ops = await db.getAllFromIndex('indexedOps', 'by-conversation', conversationKey);
+  return ops.sort((a, b) =>
+    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+}
+
+export async function getIndexedOpByTxId(txId: string, username?: string): Promise<IndexedOp | undefined> {
+  const db = await getDB(username);
+  const ops = await db.getAllFromIndex('indexedOps', 'by-txId', txId);
+  return ops[0];
+}
+
+/**
+ * Discover all conversation partners from indexed ops.
+ * Returns partner usernames with their most recent message timestamp.
+ */
+export async function discoverPartnersFromIndex(
+  account: string,
+): Promise<Array<{ username: string; lastTimestamp: string }>> {
+  const ops = await getIndexedOpsByAccount(account);
+  const partners = new Map<string, string>();
+
+  for (const op of ops) {
+    const partner = op.from === account ? op.to : op.from;
+    if (!partner) continue;
+
+    const existing = partners.get(partner);
+    if (!existing || op.timestamp > existing) {
+      partners.set(partner, op.timestamp);
+    }
+  }
+
+  return Array.from(partners.entries())
+    .map(([username, lastTimestamp]) => ({ username, lastTimestamp }))
+    .sort((a, b) => b.lastTimestamp.localeCompare(a.lastTimestamp));
 }
 
 export type { MessageCache, ConversationCache, DecryptedMemoCache, CustomJsonMessage };

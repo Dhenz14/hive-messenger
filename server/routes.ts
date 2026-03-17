@@ -3,14 +3,18 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { z } from "zod";
 import type { Message, Conversation } from "@shared/schema";
+import { blockchainOps } from "@shared/schema";
 import { hiveClient } from "../client/src/lib/hiveClient";
-import { 
-  createSession, 
-  getSession, 
-  invalidateSession, 
+import {
+  createSession,
+  getSession,
+  invalidateSession,
   verifyKeychainSignature,
   requireAuth
 } from "./auth";
+import { db } from "./db";
+import { and, or, eq, lt, gt, desc, sql } from "drizzle-orm";
+import { startIndexer, getIndexerStatus } from "./services/chainIndexer";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================================================
@@ -771,6 +775,139 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Error adding contact:", error);
       res.status(500).json({ error: "Failed to add contact" });
     }
+  });
+
+  // ============================================================================
+  // REPLAY ENGINE: Historical message query endpoints (server-side indexer)
+  // ============================================================================
+
+  // GET /api/history/:username/messages - Query indexed messages for a conversation
+  // Used by client for gap-fill when local IndexedDB has holes
+  app.get("/api/history/:username/messages", async (req, res) => {
+    try {
+      const { username } = req.params;
+      const partner = req.query.partner as string;
+      const before = req.query.before as string;
+      const after = req.query.after as string;
+      const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 500);
+
+      if (!partner) {
+        return res.status(400).json({
+          error: 'Missing parameter',
+          message: 'partner query parameter is required',
+        });
+      }
+
+      // Build conditions: messages where (sender=user AND recipient=partner)
+      // OR (sender=partner AND recipient=user)
+      const conditions = [
+        or(
+          and(eq(blockchainOps.sender, username), eq(blockchainOps.recipient, partner)),
+          and(eq(blockchainOps.sender, partner), eq(blockchainOps.recipient, username)),
+        ),
+      ];
+
+      if (before) {
+        conditions.push(lt(blockchainOps.timestamp, new Date(before)));
+      }
+      if (after) {
+        conditions.push(gt(blockchainOps.timestamp, new Date(after)));
+      }
+
+      const results = await db.select()
+        .from(blockchainOps)
+        .where(and(...conditions))
+        .orderBy(desc(blockchainOps.timestamp))
+        .limit(limit);
+
+      res.json({
+        messages: results,
+        count: results.length,
+        hasMore: results.length === limit,
+      });
+    } catch (error) {
+      console.error('[history] Error fetching messages:', error);
+      res.status(500).json({
+        error: 'Failed to fetch historical messages',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
+
+  // GET /api/history/:username/conversations - Discover all conversation partners
+  // Returns all unique partners from the indexed blockchain ops
+  app.get("/api/history/:username/conversations", async (req, res) => {
+    try {
+      const { username } = req.params;
+
+      // Find all unique partners where user is sender or recipient
+      const asSender = await db.select({
+        partner: blockchainOps.recipient,
+        lastTimestamp: sql<string>`MAX(${blockchainOps.timestamp})`.as('last_ts'),
+      })
+        .from(blockchainOps)
+        .where(eq(blockchainOps.sender, username))
+        .groupBy(blockchainOps.recipient);
+
+      const asRecipient = await db.select({
+        partner: blockchainOps.sender,
+        lastTimestamp: sql<string>`MAX(${blockchainOps.timestamp})`.as('last_ts'),
+      })
+        .from(blockchainOps)
+        .where(eq(blockchainOps.recipient, username))
+        .groupBy(blockchainOps.sender);
+
+      // Merge and deduplicate, keeping the most recent timestamp
+      const partnerMap = new Map<string, string>();
+
+      for (const row of asSender) {
+        const ts = row.lastTimestamp;
+        if (!partnerMap.has(row.partner) || ts > partnerMap.get(row.partner)!) {
+          partnerMap.set(row.partner, ts);
+        }
+      }
+
+      for (const row of asRecipient) {
+        const ts = row.lastTimestamp;
+        if (!partnerMap.has(row.partner) || ts > partnerMap.get(row.partner)!) {
+          partnerMap.set(row.partner, ts);
+        }
+      }
+
+      const conversations = Array.from(partnerMap.entries())
+        .map(([partner, lastTimestamp]) => ({ partner, lastTimestamp }))
+        .sort((a, b) => b.lastTimestamp.localeCompare(a.lastTimestamp));
+
+      res.json({ conversations, count: conversations.length });
+    } catch (error) {
+      console.error('[history] Error discovering conversations:', error);
+      res.status(500).json({
+        error: 'Failed to discover conversations',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
+
+  // GET /api/indexer/status - Check indexer health and progress
+  app.get("/api/indexer/status", async (_req, res) => {
+    try {
+      const status = getIndexerStatus();
+      res.json(status);
+    } catch (error) {
+      res.status(500).json({
+        error: 'Failed to get indexer status',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
+
+  // ============================================================================
+  // Start server-side indexer
+  // ============================================================================
+
+  // Start the block indexer in the background
+  startIndexer().catch(err => {
+    console.error('[routes] Failed to start indexer:', err);
   });
 
   const httpServer = createServer(app);

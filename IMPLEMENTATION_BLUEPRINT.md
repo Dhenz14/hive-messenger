@@ -139,5 +139,34 @@ customJsonMessages: {
 
 ---
 
-**STATUS: READY FOR IMPLEMENTATION**
-**COUNCIL APPROVAL: 6/6 UNANIMOUS**
+## Phase 7: Replay Engine & Message Recovery (Implemented March 2026)
+
+Full history recovery system adapted from the [Ragnarok Card Game](https://github.com/Dhenz14/norse-mythos-card-game) lightweight indexer pattern.
+
+### New Files
+
+- `client/src/lib/hiveRpc.ts` — Lightweight multi-node RPC (fetch-based, 3 nodes, 8s timeout)
+- `client/src/lib/replayEngine.ts` — Full history crawler with sync cursors (1000 ops/page)
+- `server/services/chainIndexer.ts` — Block-based irreversible scanner (20 blocks/batch)
+- `server/services/chainState.ts` — PostgreSQL cursor management
+
+### Modified Files
+
+- `client/src/lib/messageCache.ts` — IndexedDB v2 with `syncCursors` + `indexedOps` stores
+- `client/src/hooks/useBlockchainMessages.ts` — Uses replay engine instead of 200-op limit
+- `client/src/contexts/AuthContext.tsx` — `startSync()`/`stopSync()` on login/logout
+- `shared/schema.ts` — `blockchain_ops` + `indexer_state` PostgreSQL tables
+- `server/routes.ts` — `/api/history/*` endpoints + indexer startup
+
+### Checklist
+
+- [x] Client-side backward pagination (1000 ops/page, two passes)
+- [x] Sync cursors in IndexedDB (incremental after first load)
+- [x] Server-side block indexer (crash-safe, sequential)
+- [x] REST API for gap-fill queries
+- [x] Auth lifecycle integration
+- [x] Legacy 50-op fetch for real-time recency
+
+---
+
+**STATUS: ALL PHASES IMPLEMENTED**

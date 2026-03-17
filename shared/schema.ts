@@ -52,6 +52,41 @@ export const contacts = pgTable("contacts", {
   userContactUnique: uniqueIndex("contacts_user_contact_unique").on(table.userId, table.contactUsername),
 }));
 
+// ============================================================================
+// REPLAY ENGINE: Server-side block indexer tables
+// ============================================================================
+
+export const blockchainOps = pgTable("blockchain_ops", {
+  id: serial("id").primaryKey(),
+  txId: text("tx_id").notNull(),
+  blockNum: integer("block_num").notNull(),
+  opType: text("op_type").notNull(),          // 'transfer' | 'custom_json_text' | 'custom_json_img'
+  sender: text("sender").notNull(),
+  recipient: text("recipient").notNull(),
+  payload: text("payload").notNull(),          // encrypted content (memo or custom_json e field)
+  hash: text("hash"),                          // integrity hash for custom_json
+  amount: text("amount"),                      // HBD amount for transfers
+  sessionId: text("session_id"),               // for multi-chunk image reassembly
+  chunkIndex: integer("chunk_index"),
+  totalChunks: integer("total_chunks"),
+  timestamp: timestamp("timestamp").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  txIdIdx: uniqueIndex("blockchain_ops_tx_id_idx").on(table.txId),
+  senderIdx: index("blockchain_ops_sender_idx").on(table.sender),
+  recipientIdx: index("blockchain_ops_recipient_idx").on(table.recipient),
+  blockNumIdx: index("blockchain_ops_block_num_idx").on(table.blockNum),
+  conversationIdx: index("blockchain_ops_conversation_idx").on(table.sender, table.recipient),
+  timestampIdx: index("blockchain_ops_timestamp_idx").on(table.timestamp),
+}));
+
+export const indexerState = pgTable("indexer_state", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull().unique(),         // 'block_cursor', 'genesis_block', etc.
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // Relations
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -92,6 +127,8 @@ export const insertUserSchema = createInsertSchema(users).omit({ id: true, creat
 export const insertConversationSchema = createInsertSchema(conversations).omit({ id: true });
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, timestamp: true });
 export const insertContactSchema = createInsertSchema(contacts).omit({ id: true, addedAt: true });
+export const insertBlockchainOpSchema = createInsertSchema(blockchainOps).omit({ id: true, createdAt: true });
+export const insertIndexerStateSchema = createInsertSchema(indexerState).omit({ id: true, updatedAt: true });
 
 // Insert Types
 
@@ -99,6 +136,8 @@ export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertConversation = z.infer<typeof insertConversationSchema>;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type InsertContact = z.infer<typeof insertContactSchema>;
+export type InsertBlockchainOp = z.infer<typeof insertBlockchainOpSchema>;
+export type InsertIndexerState = z.infer<typeof insertIndexerStateSchema>;
 
 // Select Types
 
@@ -106,6 +145,8 @@ export type User = typeof users.$inferSelect;
 export type ConversationDB = typeof conversations.$inferSelect;
 export type MessageDB = typeof messages.$inferSelect;
 export type ContactDB = typeof contacts.$inferSelect;
+export type BlockchainOp = typeof blockchainOps.$inferSelect;
+export type IndexerStateRow = typeof indexerState.$inferSelect;
 
 // Hive Blockchain Data Models
 

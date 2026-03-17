@@ -9,11 +9,15 @@ import {
 import {
   getMessagesByConversation,
   cacheMessage,
+  cacheMessages,
   updateConversation,
   getConversation,
   getConversationKey,
+  getIndexedOpsByConversation,
   type MessageCache,
+  type IndexedOp,
 } from '@/lib/messageCache';
+import { syncAccount, type SyncResult } from '@/lib/replayEngine';
 import { queryClient } from '@/lib/queryClient';
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/logger';
@@ -210,99 +214,115 @@ export function useBlockchainMessages({
       });
 
       try {
-        // TIER 2 OPTIMIZATION: Get last synced operation ID for incremental filtering
         const conversationKey = getConversationKey(user.username, partnerUsername);
-        const { getLastSyncedOpId, setLastSyncedOpId } = await import('@/lib/messageCache');
-        let lastSyncedOpId = await getLastSyncedOpId(conversationKey, user.username);
-        
-        // CRITICAL FIX: If no cached messages exist, ignore lastSyncedOpId to fetch ALL messages
-        // This handles case where user cleared messages but metadata persisted
-        if (cachedMessages.length === 0) {
-          logger.info('[QUERY] No cached messages - fetching ALL from blockchain (ignoring lastSyncedOpId)');
-          lastSyncedOpId = null;
+
+        // REPLAY ENGINE: Trigger background sync (crawls full history with pagination)
+        // This replaces the old 200-op limit fetch with unbounded backward crawl
+        try {
+          const syncResult = await syncAccount(user.username);
+          if (syncResult.newOps > 0) {
+            logger.info('[REPLAY] Sync found', syncResult.newOps, 'new ops');
+          }
+        } catch (syncErr) {
+          logger.warn('[REPLAY] Sync error (falling back to legacy fetch):', syncErr);
         }
-        
-        // HYBRID APPROACH: Fetch BOTH transfer operations (legacy) AND custom_json text messages
-        // Then merge them chronologically for unified conversation view
-        
-        // Fetch legacy transfer-based messages (memo encryption)
-        const transferMessages = await getConversationMessages(
-          user.username,
-          partnerUsername,
-          200,  // Always fetch last 200, filter for new ones
-          lastSyncedOpId
-        );
-        
-        // Fetch new custom_json text messages
-        const customJsonTextMessages = await getCustomJsonTextMessages(
-          user.username,
-          partnerUsername,
-          200
-        );
-        
-        logger.info('[HYBRID] Retrieved:', {
-          transferMessages: transferMessages.length,
-          customJsonTextMessages: customJsonTextMessages.length
-        });
 
-        // TIER 1 OPTIMIZATION: Batch all new messages for single IndexedDB transaction
+        // REPLAY ENGINE: Read indexed ops for this conversation from IndexedDB
+        // The replay engine has already crawled all history and stored it
+        const indexedOps = await getIndexedOpsByConversation(user.username, partnerUsername);
+        logger.info('[REPLAY] Found', indexedOps.length, 'indexed ops for conversation');
+
+        // Convert indexed ops to MessageCache format and merge
         const newMessagesToCache: MessageCache[] = [];
-        let highestOpId = lastSyncedOpId || 0;
 
-        // Process legacy transfer-based messages
-        for (const msg of transferMessages) {
-          // TIER 2: Track highest operation ID for incremental sync
-          if (msg.index > highestOpId) {
-            highestOpId = msg.index;
-          }
-          
-          if (mergedMessages.has(msg.trx_id)) {
-            continue;
-          }
+        for (const op of indexedOps) {
+          if (mergedMessages.has(op.txId)) continue;
 
-          if (msg.from === user.username) {
-            // Sent messages CAN be decrypted using sender's memo key (ECDH encryption)
-            // Store as encrypted placeholder initially, user can decrypt with Keychain
-            // PHASE 4.1: NEVER filter sent messages - user always sees their own messages
+          // Skip multi-chunk image parts (they'll be reassembled separately)
+          if (op.sessionId && op.chunkIndex !== undefined && op.chunkIndex > 0) continue;
+
+          if (op.opType === 'transfer') {
+            // Legacy memo-based transfer message
+            const messageAmount = parseHBDAmount(op.amount || '0.000 HBD');
+            const senderIsException = isException(op.from);
+            const isSent = op.from === user.username;
+            const shouldHide = !isSent && !senderIsException && messageAmount < userMinimumAmount;
+
             const messageCache: MessageCache = {
-              id: msg.trx_id,
+              id: op.txId,
               conversationKey,
-              from: msg.from,
-              to: msg.to,
+              from: op.from,
+              to: op.to,
               content: '[🔒 Encrypted - Click to decrypt]',
-              encryptedContent: msg.memo,
-              timestamp: msg.timestamp,
-              txId: msg.trx_id,
+              encryptedContent: op.payload,
+              timestamp: op.timestamp,
+              txId: op.txId,
               confirmed: true,
-              amount: msg.amount, // Store HBD transfer amount
-              messageType: 'memo', // Legacy memo-based message
+              amount: op.amount,
+              hidden: shouldHide,
+              messageType: 'memo',
             };
 
             newMessagesToCache.push(messageCache);
-            mergedMessages.set(msg.trx_id, messageCache);
-          } else {
-            // Received message - store with placeholder, will decrypt on demand
-            // PHASE 4.1 + EXCEPTIONS: Filter received messages below user's minimum HBD threshold
-            // UNLESS sender is on exceptions list (whitelisted contacts always visible)
+            mergedMessages.set(op.txId, messageCache);
+          } else if (op.opType === 'custom_json_text') {
+            // Custom JSON text message (always visible - no HBD filter)
+            const messageCache: MessageCache = {
+              id: op.txId,
+              conversationKey,
+              from: op.from,
+              to: op.to,
+              content: '[🔒 Encrypted - Click to decrypt]',
+              encryptedContent: op.payload,
+              timestamp: op.timestamp,
+              txId: op.txId,
+              confirmed: true,
+              messageType: 'customJsonText',
+              hash: op.hash,
+              hidden: false,
+            };
+
+            newMessagesToCache.push(messageCache);
+            mergedMessages.set(op.txId, messageCache);
+          } else if (op.opType === 'custom_json_img') {
+            // Custom JSON image message (single-op or first chunk of reassembled)
+            const messageCache: MessageCache = {
+              id: op.txId,
+              conversationKey,
+              from: op.from,
+              to: op.to,
+              content: '[🔒 Encrypted - Click to decrypt]',
+              encryptedContent: op.payload,
+              timestamp: op.timestamp,
+              txId: op.txId,
+              confirmed: true,
+              messageType: 'customJsonImage' as any,
+              hash: op.hash,
+              hidden: false,
+            };
+
+            newMessagesToCache.push(messageCache);
+            mergedMessages.set(op.txId, messageCache);
+          }
+        }
+
+        // ALSO run legacy fetch for very recent messages not yet indexed by replay engine
+        // (The replay engine may have a slight delay on brand-new ops)
+        try {
+          const recentTransfers = await getConversationMessages(
+            user.username, partnerUsername, 50
+          );
+          const recentCustomJson = await getCustomJsonTextMessages(
+            user.username, partnerUsername, 50
+          );
+
+          for (const msg of recentTransfers) {
+            if (mergedMessages.has(msg.trx_id)) continue;
             const messageAmount = parseHBDAmount(msg.amount || '0.000 HBD');
             const senderIsException = isException(msg.from);
-            const shouldHide = !senderIsException && messageAmount < userMinimumAmount;
-            
-            if (shouldHide) {
-              logger.info('[FILTER] Hiding memo message below minimum:', {
-                txId: msg.trx_id.substring(0, 20),
-                from: msg.from,
-                amount: msg.amount,
-                minimum: userMinimumHBD
-              });
-            } else if (senderIsException && messageAmount < userMinimumAmount) {
-              logger.info('[FILTER] Showing memo message from exception despite low amount:', {
-                txId: msg.trx_id.substring(0, 20),
-                from: msg.from,
-                amount: msg.amount
-              });
-            }
-            
+            const isSent = msg.from === user.username;
+            const shouldHide = !isSent && !senderIsException && messageAmount < userMinimumAmount;
+
             const messageCache: MessageCache = {
               id: msg.trx_id,
               conversationKey,
@@ -313,55 +333,41 @@ export function useBlockchainMessages({
               timestamp: msg.timestamp,
               txId: msg.trx_id,
               confirmed: true,
-              amount: msg.amount, // Store HBD transfer amount
-              hidden: shouldHide, // Mark as hidden if below minimum AND not exception
-              messageType: 'memo', // Legacy memo-based message
+              amount: msg.amount,
+              hidden: shouldHide,
+              messageType: 'memo',
             };
-
             newMessagesToCache.push(messageCache);
             mergedMessages.set(msg.trx_id, messageCache);
           }
-        }
-        
-        // Process custom_json text messages (always visible - no minimum HBD filter)
-        for (const customJsonMsg of customJsonTextMessages) {
-          if (mergedMessages.has(customJsonMsg.txId)) {
-            continue; // Already cached
+
+          for (const cjMsg of recentCustomJson) {
+            if (mergedMessages.has(cjMsg.txId)) continue;
+            const messageCache: MessageCache = {
+              id: cjMsg.txId,
+              conversationKey,
+              from: cjMsg.from,
+              to: cjMsg.to,
+              content: '[🔒 Encrypted - Click to decrypt]',
+              encryptedContent: cjMsg.encryptedPayload,
+              timestamp: cjMsg.timestamp,
+              txId: cjMsg.txId,
+              confirmed: true,
+              messageType: 'customJsonText',
+              hash: cjMsg.hash,
+              hidden: false,
+            };
+            newMessagesToCache.push(messageCache);
+            mergedMessages.set(cjMsg.txId, messageCache);
           }
-          
-          // Store custom_json message with encrypted placeholder
-          // User will decrypt on demand
-          const messageCache: MessageCache = {
-            id: customJsonMsg.txId,
-            conversationKey,
-            from: customJsonMsg.from,
-            to: customJsonMsg.to,
-            content: '[🔒 Encrypted - Click to decrypt]',
-            encryptedContent: customJsonMsg.encryptedPayload,
-            timestamp: customJsonMsg.timestamp,
-            txId: customJsonMsg.txId,
-            confirmed: true,
-            messageType: 'customJsonText', // New custom_json text message
-            hash: customJsonMsg.hash,
-            // No minimum HBD filtering for custom_json messages
-            hidden: false,
-          };
-          
-          newMessagesToCache.push(messageCache);
-          mergedMessages.set(customJsonMsg.txId, messageCache);
+        } catch (legacyErr) {
+          logger.warn('[REPLAY] Legacy recent fetch failed:', legacyErr);
         }
 
-        // TIER 1 OPTIMIZATION: Single batched write instead of N individual writes
+        // Batch write all new messages to IndexedDB
         if (newMessagesToCache.length > 0) {
-          logger.info('[QUERY] Batching', newMessagesToCache.length, 'new messages for single IndexedDB write');
-          await import('@/lib/messageCache').then(({ cacheMessages }) => 
-            cacheMessages(newMessagesToCache, user.username)
-          );
-        }
-        
-        // TIER 2: Update last synced operation ID for next incremental sync
-        if (highestOpId > (lastSyncedOpId || 0)) {
-          await setLastSyncedOpId(conversationKey, highestOpId, user.username);
+          logger.info('[QUERY] Batching', newMessagesToCache.length, 'new messages for IndexedDB write');
+          await cacheMessages(newMessagesToCache, user.username);
         }
       } catch (blockchainError) {
         logger.error('Failed to fetch from blockchain, using cached data:', blockchainError);
@@ -522,33 +528,45 @@ export function useConversationDiscovery() {
         throw new Error('User not authenticated');
       }
 
-      logger.info('[CONV DISCOVERY] Starting progressive discovery for user:', user.username);
-      
-      // TIER 3 OPTIMIZATION: Progressive Loading - Two-phase discovery
-      // Phase 1: Quick scan of recent 50 operations (5-7 seconds)
-      // Phase 2: Full scan of 200 operations in background (runs after returning Phase 1 results)
-      
-      // ========== PHASE 1: Quick Initial Scan (50 operations) ==========
-      logger.info('[PROGRESSIVE] Phase 1: Fetching recent 50 operations (quick scan)...');
-      const phase1Start = performance.now();
-      
-      const phase1Partners = await discoverConversations(user.username, 50);
-      logger.info('[PROGRESSIVE] Phase 1 discovered', phase1Partners.length, 'partners in', 
-                  Math.round(performance.now() - phase1Start), 'ms');
+      logger.info('[CONV DISCOVERY] Starting discovery with replay engine for user:', user.username);
 
-      // Process Phase 1 partners
-      const phase1Cached = await Promise.all(
-        phase1Partners.map(({ username }) => getConversation(user.username, username))
+      // REPLAY ENGINE: The sync is already running (triggered by useBlockchainMessages
+      // or the auth lifecycle). Discover partners from the indexed ops.
+      const { discoverPartnersFromIndex } = await import('@/lib/messageCache');
+      const indexedPartners = await discoverPartnersFromIndex(user.username);
+
+      logger.info('[REPLAY] Discovered', indexedPartners.length, 'partners from indexed ops');
+
+      // ALSO run legacy discovery for very recent messages (last 50 ops)
+      // that may not yet be in the replay engine index
+      const legacyPartners = await discoverConversations(user.username, 50);
+
+      // Merge: indexed partners take priority, add any legacy-only partners
+      const partnerMap = new Map<string, string>();
+      for (const p of indexedPartners) {
+        partnerMap.set(p.username, p.lastTimestamp);
+      }
+      for (const p of legacyPartners) {
+        if (!partnerMap.has(p.username) || p.lastTimestamp > partnerMap.get(p.username)!) {
+          partnerMap.set(p.username, p.lastTimestamp);
+        }
+      }
+
+      const allPartners = Array.from(partnerMap.entries())
+        .map(([username, lastTimestamp]) => ({ username, lastTimestamp }))
+        .sort((a, b) => b.lastTimestamp.localeCompare(a.lastTimestamp));
+
+      logger.info('[CONV DISCOVERY] Total partners after merge:', allPartners.length);
+
+      // Process all partners: check cache, create placeholders for new ones
+      const allCached = await Promise.all(
+        allPartners.map(({ username }) => getConversation(user.username, username))
       );
 
-      const phase1Uncached = phase1Partners.filter((_, index) => !phase1Cached[index]);
-      
-      logger.info('[PROGRESSIVE] Phase 1 - Cached:', phase1Cached.filter(Boolean).length, 
-                  'Uncached:', phase1Uncached.length);
+      const uncached = allPartners.filter((_, index) => !allCached[index]);
 
-      // Create placeholders for Phase 1 uncached partners
-      const phase1NewConversations = await Promise.all(
-        phase1Uncached.map(async ({ username, lastTimestamp }) => {
+      const newConversations = await Promise.all(
+        uncached.map(async ({ username, lastTimestamp }) => {
           const newConversation = {
             conversationKey: getConversationKey(user.username, username),
             partnerUsername: username,
@@ -563,104 +581,13 @@ export function useConversationDiscovery() {
         })
       );
 
-      // Return Phase 1 results immediately (5-7 seconds total)
-      const phase1Conversations = [
-        ...phase1Cached.filter(Boolean),
-        ...phase1NewConversations.filter(Boolean)
+      const conversations = [
+        ...allCached.filter(Boolean),
+        ...newConversations.filter(Boolean)
       ];
 
-      logger.info('[PROGRESSIVE] Phase 1 complete:', phase1Conversations.length, 
-                  'conversations ready to display');
-
-      // ========== PHASE 2: Background Full Scan (200 operations) ==========
-      // Launch Phase 2 in background - don't await, let it run async
-      (async () => {
-        try {
-          logger.info('[PROGRESSIVE] Phase 2: Starting background scan of 200 operations...');
-          const phase2Start = performance.now();
-          const queryKey = ['blockchain-conversations', user.username];
-          
-          const allPartners = await discoverConversations(user.username, 200);
-          logger.info('[PROGRESSIVE] Phase 2 discovered', allPartners.length, 'total partners in',
-                      Math.round(performance.now() - phase2Start), 'ms');
-
-          // Find NEW partners not in Phase 1
-          const phase1Usernames = new Set(phase1Partners.map(p => p.username));
-          const newPartners = allPartners.filter(p => !phase1Usernames.has(p.username));
-          
-          if (newPartners.length === 0) {
-            logger.info('[PROGRESSIVE] Phase 2: No additional partners found beyond Phase 1');
-            return;
-          }
-
-          logger.info('[PROGRESSIVE] Phase 2: Found', newPartners.length, 'additional partners');
-
-          // Process new partners
-          const newCached = await Promise.all(
-            newPartners.map(({ username }) => getConversation(user.username, username))
-          );
-
-          const newUncached = newPartners.filter((_, index) => !newCached[index]);
-
-          const newConversationsData = await Promise.all(
-            newUncached.map(async ({ username, lastTimestamp }) => {
-              const newConversation = {
-                conversationKey: getConversationKey(user.username, username),
-                partnerUsername: username,
-                lastMessage: `New conversation with @${username}`,
-                lastTimestamp: lastTimestamp,
-                unreadCount: 0,
-                lastChecked: new Date().toISOString(),
-              };
-
-              await updateConversation(newConversation, user.username);
-              return newConversation;
-            })
-          );
-
-          const phase2NewConversations = [
-            ...newCached.filter(Boolean),
-            ...newConversationsData.filter(Boolean)
-          ];
-
-          logger.info('[PROGRESSIVE] Phase 2 complete: Found', phase2NewConversations.length, 
-                      'additional conversations');
-
-          // RACE CONDITION FIX: Use functional setQueryData to merge with current cache
-          // This prevents Phase 2 from overwriting newer refetch results
-          queryClient.setQueryData(queryKey, (currentData: any) => {
-            if (!currentData) {
-              logger.warn('[PROGRESSIVE] Phase 2: Cache cleared, skipping update');
-              return currentData;
-            }
-
-            // Build set of existing conversation keys to avoid duplicates
-            const existingKeys = new Set(
-              currentData.map((c: any) => c.conversationKey)
-            );
-
-            // Only add conversations that don't already exist in current cache
-            const trulyNewConversations = phase2NewConversations.filter(
-              c => c && !existingKeys.has(c.conversationKey)
-            );
-
-            if (trulyNewConversations.length === 0) {
-              logger.info('[PROGRESSIVE] Phase 2: All conversations already in cache');
-              return currentData;
-            }
-
-            logger.info('[PROGRESSIVE] Phase 2: Adding', trulyNewConversations.length, 
-                        'new conversations to cache');
-
-            return [...currentData, ...trulyNewConversations];
-          });
-        } catch (error) {
-          logger.error('[PROGRESSIVE] Phase 2 error:', error);
-        }
-      })();
-
-      // Return Phase 1 results immediately (user sees conversations in 5-7 seconds)
-      return phase1Conversations;
+      logger.info('[CONV DISCOVERY] Complete:', conversations.length, 'conversations');
+      return conversations;
     },
     enabled: !!user?.username,
     refetchInterval: (data) => {

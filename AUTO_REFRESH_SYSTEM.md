@@ -993,15 +993,60 @@ You don't need to understand how it works - just know that:
 ### For Developers
 
 The system is implemented via:
+
 - React Query's `refetchInterval`
 - Page Visibility API
 - User activity tracking
 - Fast polling trigger mechanism
 - Adaptive logic based on context
 
-**Questions? Contact the development team.**
+---
+
+## Replay Engine Sync (v3.0.0)
+
+In addition to the auto-refresh polling above, the **replay engine** provides a deeper sync layer:
+
+### How It Differs from Auto-Refresh
+
+| Layer | Purpose | Interval | Scope |
+| --- | --- | --- | --- |
+| Auto-refresh (React Query) | Real-time new messages | 3-45s adaptive | Last 50 ops |
+| Replay engine (replayEngine.ts) | Full history recovery | 30s polling | ALL ops ever |
+
+### Lifecycle
+
+- **Login/session restore**: `startSync(username)` begins the replay engine
+- **First sync**: Full backward crawl of ALL account history (1000 ops/page)
+- **Subsequent syncs**: Incremental — only fetches ops newer than sync cursor
+- **Logout**: `stopSync()` halts polling
+
+### Sync Status
+
+The replay engine exposes observable sync status for UI indicators:
+
+- `idle` — No sync in progress
+- `incremental` — Fetching new ops since last cursor
+- `full-resync` — First-time full history crawl (with 0-100% progress)
+- `error` — Sync failed (will retry on next interval)
+
+### Data Flow
+
+```text
+replayEngine.syncAccount()
+  → crawlHistory(transfers)     → backward pagination until cursor
+  → crawlHistory(custom_json)   → backward pagination until cursor
+  → processOps()                → filter for messenger ops
+  → putIndexedOps()             → batch write to IndexedDB
+  → putSyncCursor()             → persist progress
+
+useBlockchainMessages hook
+  → syncAccount()               → triggers replay engine
+  → getIndexedOpsByConversation()  → reads from IndexedDB
+  → getConversationMessages(50) → legacy fetch for recency
+  → merge + deduplicate         → unified message list
+```
 
 ---
 
-*Last Updated: November 15, 2024*  
-*Version: v2.2.2*
+*Last Updated: March 16, 2026*
+*Version: v3.0.0*

@@ -422,9 +422,23 @@ const results = await decryptMemosInParallel(memosToDecrypt, 5);
 **Total Performance Gain**: **85-95% faster** syncing after initial load
 
 **Next Steps**:
+
 1. Monitor console logs for `[INCREMENTAL]` and `[MEMO CACHE HIT]` indicators
 2. Gather user feedback on perceived performance
 3. Wire parallel decryption after 1-2 weeks of stability
-4. Consider multi-page sync for edge cases
 
 **Deployment**: Zero changes required - all optimizations are client-side IndexedDB + filtering logic. Static build works as before.
+
+---
+
+## Tier 3: Replay Engine (Supersedes Multi-Page Sync)
+
+Tier 2's "multi-page sync for edge cases" has been fully superseded by the **Tier 3 Replay Engine**, which crawls the entire account history with backward pagination (1000 ops/page) and sync cursors. See `OPTIMIZATION_GUIDE.md` (Tier 3 section) for full details.
+
+Key improvements over Tier 2's incremental sync:
+
+- **Unlimited history**: No 200-op window limitation — all messages recoverable
+- **Full backward crawl**: First login scans entire history, subsequent logins are incremental
+- **Server-side backup**: Block indexer stores all messenger ops in PostgreSQL for gap-fill
+- **New files**: `replayEngine.ts`, `hiveRpc.ts`, `chainIndexer.ts`, `chainState.ts`
+- **IndexedDB v2**: Added `syncCursors` and `indexedOps` stores

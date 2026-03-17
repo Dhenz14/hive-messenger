@@ -1,11 +1,12 @@
 # Hive Messenger
 
-A decentralized, end-to-end encrypted messaging Progressive Web App (PWA) built on the Hive blockchain. No servers. No database. No private keys ever leave your device.
+A decentralized, end-to-end encrypted messaging Progressive Web App (PWA) built on the Hive blockchain. No private keys ever leave your device.
 
 ## What It Does
 
 - **FREE text messaging** via Hive `custom_json` operations (0.000 HBD per message)
 - **End-to-end encryption** using Hive memo keys (ECDH + AES-256-CBC) via Hive Keychain
+- **Full message history recovery** - lightweight replay engine crawls ALL blockchain history, never loses old messages
 - **Bitcoin Lightning tips** with three payment methods (HBD bridge, manual, WebLN)
 - **Auto-refreshing** - messages appear in 2-5 seconds without manual page refresh
 - **Offline browsing** of cached messages via IndexedDB
@@ -13,19 +14,24 @@ A decentralized, end-to-end encrypted messaging Progressive Web App (PWA) built 
 
 ## Architecture
 
-100% client-side. Zero backend for user data.
-
 ```
 User Device
   └── Hive Messenger PWA (React)
         ├── Hive Keychain (auth + encryption)
         ├── Hive Blockchain (message storage)
-        │     └── Public RPC nodes
-        ├── IndexedDB (local message cache)
+        │     └── Public RPC nodes (3-node failover)
+        ├── Replay Engine (full history crawl + sync cursors)
+        ├── IndexedDB (local message cache + indexed ops)
         └── Lightning Network (Bitcoin tips)
               ├── LNURL endpoints
               ├── v4v.app (HBD→Lightning bridge)
               └── WebLN browser wallets
+
+Server (optional, for gap-fill)
+  └── Block Indexer
+        ├── Sequential irreversible block scanning
+        ├── PostgreSQL (blockchain_ops table)
+        └── REST API for historical queries
 ```
 
 ## Quick Start
@@ -64,11 +70,21 @@ npm start
 
 ### Receiving Messages
 
-1. Auto-refresh system polls blockchain every 3-15 seconds (adaptive)
-2. New messages fetched from Hive RPC nodes
-3. Cached in IndexedDB for instant loading
-4. User clicks "Decrypt" → Keychain decodes encrypted payload
-5. Decrypted message cached locally
+1. **Replay engine** crawls full account history on first login (1000 ops/page, backward pagination)
+2. **Sync cursor** tracks progress — subsequent logins only fetch new ops (incremental sync)
+3. Auto-refresh polls blockchain every 3-15 seconds for real-time updates (adaptive)
+4. All messages cached in IndexedDB `indexedOps` store with conversation indexes
+5. User clicks "Decrypt" → Keychain decodes encrypted payload
+6. Decrypted message cached locally
+
+### Message Recovery (Replay Engine)
+
+Old messages are **never lost** even after long periods of inactivity or cache clearing:
+
+1. **Client-side replay engine** paginates backward through ALL account history (not just the last 200 ops)
+2. **Server-side block indexer** continuously scans irreversible blocks for messenger ops
+3. **Gap-fill API** lets the client query the server when local cache has holes
+4. **Sync cursors** persist in IndexedDB so re-syncs are instant (only new ops fetched)
 
 ### Legacy Support
 
@@ -104,16 +120,29 @@ client/src/
 │   ├── ConversationsList.tsx
 │   └── lightning/       # Lightning tip UI
 ├── contexts/            # Auth, theme, exceptions
-├── hooks/               # useBlockchainMessages, etc.
+├── hooks/
+│   └── useBlockchainMessages.ts  # Message fetching (uses replay engine)
 ├── lib/
 │   ├── hive.ts          # Blockchain API
-│   ├── hiveClient.ts    # RPC node health + failover
-│   ├── messageCache.ts  # IndexedDB
+│   ├── hiveClient.ts    # RPC node health + failover (dhive)
+│   ├── hiveRpc.ts       # Lightweight direct RPC (fetch-based, 3 nodes)
+│   ├── replayEngine.ts  # Full history crawler with sync cursors
+│   ├── messageCache.ts  # IndexedDB (v2: + syncCursors, indexedOps)
 │   ├── customJsonEncryption.ts
 │   ├── accountMetadata.ts
 │   └── lightning.ts
 └── pages/
     └── Messages.tsx     # Main chat view
+
+server/
+├── routes.ts            # API routes (+ /api/history/* endpoints)
+├── services/
+│   ├── chainIndexer.ts  # Block-based irreversible scanner
+│   └── chainState.ts    # PostgreSQL cursor management
+└── db.ts                # Drizzle + Neon PostgreSQL
+
+shared/
+└── schema.ts            # DB tables (+ blockchain_ops, indexer_state)
 ```
 
 ## Key Dependencies
@@ -132,12 +161,18 @@ client/src/
 
 ## Hive RPC Nodes
 
-The app automatically selects the healthiest node via health scoring and transparent failover:
+The app uses two RPC strategies:
+
+**hiveClient.ts** (dhive-based, with health scoring):
 
 - `https://api.hive.blog`
-- `https://api.hivekings.com`
-- `https://anyx.io`
-- `https://api.openhive.network`
+- `https://api.deathwing.me`
+- `https://hive-api.arcange.eu`
+
+**hiveRpc.ts** (lightweight fetch-based, for replay engine):
+
+- Same 3 nodes with 8s timeout per node
+- Auto-failover on error or timeout
 
 ## Security
 
@@ -145,7 +180,46 @@ The app automatically selects the healthiest node via health scoring and transpa
 - All messages encrypted client-side before blockchain broadcast
 - SHA-256 hash integrity verification on all `custom_json` messages
 - Lightning invoices validated (amount, expiry, network) before payment
-- No API keys, no backend, no central point of failure
+- Server-side indexer stores only encrypted payloads — no plaintext ever touches the server
+
+## Replay Engine & Message Recovery
+
+### The Problem
+
+Previously, the app only fetched the last 200 account history operations. If a user was inactive for a long period or cleared their browser data, older messages were unrecoverable from the client's perspective.
+
+### The Solution
+
+Adapted from [Ragnarok Card Game](https://github.com/Dhenz14/norse-mythos-card-game) indexer patterns.
+
+**Client-side replay engine** (`replayEngine.ts`):
+
+- Paginates backward through ALL account history (1000 ops/page)
+- Separate crawls for transfers (filter=4) and custom_json (filter=262144)
+- Sync cursors persist in IndexedDB — incremental on subsequent logins
+- 30-second polling interval for real-time updates
+- Starts on login, stops on logout
+
+**Server-side block indexer** (`chainIndexer.ts`):
+
+- Scans irreversible blocks sequentially (20 blocks/batch, 10s polling)
+- Stores messenger ops in PostgreSQL `blockchain_ops` table
+- Crash-safe: cursor only advances after full block processed
+- REST API for client gap-fill queries
+
+**API Endpoints:**
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/history/:user/messages?partner=X` | Fetch historical messages for a conversation |
+| `GET /api/history/:user/conversations` | Discover all conversation partners |
+| `GET /api/indexer/status` | Check indexer health and block cursor |
+
+### Environment Variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `INDEXER_GENESIS_BLOCK` | `0` | First block to scan (set to avoid scanning from block 1) |
 
 ## Platform Support
 

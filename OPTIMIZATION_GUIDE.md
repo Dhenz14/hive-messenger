@@ -1096,9 +1096,109 @@ Hive Messenger has evolved into a truly FREE, decentralized messaging platform w
 - Track Lightning tip adoption
 - Optimize further based on metrics
 
-**Questions? Contact the development team.**
+---
+
+## Tier 3: Replay Engine & Full History Recovery (v3.0.0)
+
+### Overview
+
+Tier 3 eliminates the biggest remaining limitation: **old messages getting lost after long periods of inactivity**. Previously, the app only fetched the last 200 account history operations. With the replay engine, ALL messages are recoverable from the blockchain at any time.
+
+Adapted from the [Ragnarok Card Game](https://github.com/Dhenz14/norse-mythos-card-game) lightweight indexer pattern.
+
+### Performance Goals
+
+| Metric | Before (Tier 2) | After (Tier 3) | Improvement |
+| --- | --- | --- | --- |
+| **Retrievable history** | Last 200 ops only | Entire account history | Unlimited |
+| **First sync** | 200 ops, ~2s | Full crawl, 30-60s | Complete history |
+| **Incremental sync** | 200 ops, ~2s | Only new ops, <500ms | Faster for active users |
+| **Recovery after absence** | Messages lost | All messages recovered | No data loss |
+| **Conversation discovery** | 200-op window | Full history | All partners found |
+
+### Architecture
+
+#### Client-Side: Replay Engine (`client/src/lib/replayEngine.ts`)
+
+The replay engine crawls the full account history using backward pagination:
+
+1. **First login (full sync):** Pages backward through ALL ops (1000/page) with two passes:
+   - Transfer operations (filter bitmask `4` = 2^2)
+   - Custom JSON operations (filter bitmask `262144` = 2^18)
+2. **Subsequent logins (incremental sync):** Only fetches ops newer than the sync cursor
+3. **Continuous polling:** Re-syncs every 30 seconds for real-time updates
+
+```
+syncAccount('username')
+  ├── crawlHistory(transferFilter=4)      → pages backward until cursor
+  ├── crawlHistory(customJsonFilter=262144) → pages backward until cursor
+  ├── processOps() → filter for messenger ops, create IndexedOp records
+  ├── putIndexedOps() → batch write to IndexedDB
+  └── putSyncCursor() → persist progress
+```
+
+**Sync Cursor** (persisted in IndexedDB `syncCursors` store):
+
+```typescript
+interface SyncCursor {
+  account: string;
+  lastTransferIndex: number;    // highest transfer op index processed
+  lastCustomJsonIndex: number;  // highest custom_json op index processed
+  lastSyncedAt: number;         // unix timestamp
+  fullSyncComplete: boolean;    // whether initial crawl finished
+}
+```
+
+#### Client-Side: IndexedDB v2 (`client/src/lib/messageCache.ts`)
+
+Two new stores added (DB version bumped from 1 to 2):
+
+- **`syncCursors`** — keyed by account, tracks replay progress
+- **`indexedOps`** — keyed by `${account}:${historyIndex}`, stores all messenger operations with indexes on account, txId, timestamp, and conversationKey
+
+#### Client-Side: Lightweight RPC (`client/src/lib/hiveRpc.ts`)
+
+Direct `fetch`-based RPC helper (no dhive overhead) for high-throughput pagination:
+
+- 3 Hive nodes with 8s timeout and auto-failover
+- Used exclusively by the replay engine for history crawls
+
+#### Server-Side: Block Indexer (`server/services/chainIndexer.ts`)
+
+Sequential block-by-block scanner adapted from Ragnarok's `chainIndexer.ts`:
+
+- Processes irreversible blocks only (crash-safe)
+- 20 blocks per batch, 10s polling interval
+- Filters for `hive-messenger-text`, `hive-messenger-img`, and encrypted transfers
+- Stores ops in PostgreSQL `blockchain_ops` table
+- Block cursor in `indexer_state` table — only advances after full block processed
+
+#### Server-Side: REST API (`server/routes.ts`)
+
+Three new endpoints for client gap-fill:
+
+- `GET /api/history/:username/messages?partner=X&before=T&after=T&limit=N`
+- `GET /api/history/:username/conversations`
+- `GET /api/indexer/status`
+
+### Integration Points
+
+1. **Auth lifecycle:** `startSync()` on login/session restore, `stopSync()` on logout
+2. **useBlockchainMessages hook:** Triggers `syncAccount()`, reads from `indexedOps`, merges with cached messages, plus a legacy 50-op fetch for very recent messages
+3. **useConversationDiscovery hook:** Uses `discoverPartnersFromIndex()` for full partner list, merges with legacy 50-op discovery
+
+### Key Files
+
+| File | Role |
+| --- | --- |
+| `client/src/lib/hiveRpc.ts` | Lightweight multi-node RPC |
+| `client/src/lib/replayEngine.ts` | Full history crawler with sync cursors |
+| `client/src/lib/messageCache.ts` | IndexedDB v2 (+ syncCursors, indexedOps) |
+| `server/services/chainIndexer.ts` | Block-based irreversible scanner |
+| `server/services/chainState.ts` | PostgreSQL cursor management |
+| `shared/schema.ts` | blockchain_ops + indexer_state tables |
 
 ---
 
-*Last Updated: November 15, 2024*  
-*Version: v2.2.2*
+*Last Updated: March 16, 2026*
+*Version: v3.0.0*

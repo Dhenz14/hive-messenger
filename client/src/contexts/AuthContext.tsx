@@ -1,15 +1,16 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import type { UserSession } from '@shared/schema';
-import { 
-  requestHandshake, 
+import {
+  requestHandshake,
   requestLogin,
-  getAccount 
+  getAccount
 } from '@/lib/hive';
-import { 
-  detectKeychainPlatform, 
+import {
+  detectKeychainPlatform,
   isKeychainAvailable,
-  type KeychainPlatform 
+  type KeychainPlatform
 } from '@/lib/keychainDetection';
+import { startSync, stopSync } from '@/lib/replayEngine';
 
 interface AuthContextType {
   user: UserSession | null;
@@ -63,6 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const account = await getAccount(session.username);
         if (account) {
           setUser(session);
+          startSync(session.username);
           console.log('[Auth] Session restored for:', session.username);
         } else {
           console.log('[Auth] Account no longer exists on blockchain, clearing session...');
@@ -125,12 +127,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Continue anyway - session is in memory
     }
     
+    // Start replay engine sync for full history crawl
+    startSync(username);
+
     console.log('[Auth] ✅ Login complete! Session stored locally.');
   };
 
   const logout = async () => {
     console.log('[Auth] Logging out...');
-    
+
+    // Stop replay engine sync
+    stopSync();
+
     setUser(null);
     localStorage.removeItem(SESSION_KEY);
     

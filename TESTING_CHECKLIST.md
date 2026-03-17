@@ -230,7 +230,55 @@ All tests pass = ✅ Ready for production use!
 - ✅ Corruption auto-detection and auto-fix
 
 ### What Changed:
+
 - Universal encrypted placeholder: `[🔒 Encrypted - Click to decrypt]`
 - Decrypt button shows for BOTH sent and received messages
 - confirmMessage() now stores encrypted content
 - ECDH encryption reality documented in code comments
+
+---
+
+## Test 5: Replay Engine - Full History Recovery
+
+**Purpose:** Verify that old messages are recoverable after long absence or cache clear.
+
+### Steps
+
+1. Log in with a Hive account that has existing messenger history
+2. Open browser DevTools Console
+3. **Expected:** See `[replayEngine] Starting FULL history crawl` on first login
+4. **Expected:** See `[replayEngine] Crawled N pages of transfer, found M ops`
+5. **Expected:** See `[replayEngine] Stored X indexed ops`
+6. Open a conversation with an old contact
+7. **Expected:** All historical messages appear (not just last 200 ops)
+8. Log out, then log back in
+9. **Expected:** See `[replayEngine] Crawled 1 pages` (incremental, not full crawl)
+10. Clear IndexedDB (Application > Storage > Clear site data)
+11. Log back in
+12. **Expected:** Full crawl runs again, all messages recovered
+
+**Success Criteria:**
+
+- Full backward crawl completes without errors
+- Incremental sync is fast (<1s) after first load
+- All messages recoverable after cache clear
+- Console shows `[REPLAY]` prefixed log lines
+
+### Test 6: Server-Side Indexer
+
+**Purpose:** Verify the block indexer and history API work.
+
+### Test 6 Steps
+
+1. Check indexer status: `GET /api/indexer/status`
+2. **Expected:** Response shows `{ cursor: N, isRunning: true }`
+3. Query historical messages: `GET /api/history/USERNAME/messages?partner=PARTNER`
+4. **Expected:** Returns indexed messages from PostgreSQL
+5. Query conversations: `GET /api/history/USERNAME/conversations`
+6. **Expected:** Returns all conversation partners discovered by indexer
+
+**Success Criteria:**
+
+- Indexer is running and advancing its block cursor
+- Historical messages queryable via REST API
+- Conversation discovery returns complete partner list
