@@ -5,22 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Hive Messenger - Encrypted Blockchain Messaging</title>
     <meta name="description" content="Send end-to-end encrypted messages on the Hive blockchain. Secure, decentralized, and censorship-resistant direct messaging powered by blockchain technology." />
-    
+
     <!-- PWA Configuration -->
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="manifest" href="manifest.json" />
     <meta name="theme-color" content="#e31337" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Hive Messenger" />
-    
-    <link rel="icon" type="image/png" href="/favicon.png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/favicon.png" />
+
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // GitHub Pages SPA redirect handler — restores route from 404.html redirect
+      (function(l) {
+        if (l.search[1] === '/' ) {
+          var decoded = l.search.slice(1).split('&').map(function(s) {
+            return s.replace(/~and~/g, '&')
+          }).join('?');
+          window.history.replaceState(null, null,
+            l.pathname.slice(0, -1) + decoded + l.hash
+          );
+        }
+      }(window.location));
+    </script>
     <script>
       // Polyfill process for browser compatibility with Keychain SDK
       window.process = {
@@ -39,13 +52,15 @@
       import { Buffer } from 'buffer';
       window.Buffer = Buffer;
     </script>
-    
+
     <!-- Service Worker Registration for PWA -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
+          // Derive SW path from current page location (works in subdirectories)
+          const swPath = new URL('sw.js', document.baseURI).href;
           navigator.serviceWorker
-            .register('/sw.js')
+            .register(swPath)
             .then((registration) => {
               console.log('[PWA] Service Worker registered:', registration.scope);
             })
@@ -55,7 +70,7 @@
         });
       }
     </script>
-    
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
