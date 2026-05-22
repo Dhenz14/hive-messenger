@@ -47,7 +47,7 @@ export async function getAccountRC(username: string): Promise<RCInfo> {
 
   try {
     // Reuse the existing Hive client instead of creating a new one
-    const rcAccounts = await hiveClientInstance.database.call('rc_api', 'find_rc_accounts', {
+    const rcAccounts = await hiveClientInstance.call('rc_api', 'find_rc_accounts', {
       accounts: [username]
     });
 
