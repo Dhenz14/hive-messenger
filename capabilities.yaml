@@ -1,0 +1,44 @@
+# capabilities.yaml — Hive Messenger
+# Registers operator-visible surfaces for the HiveAI unified capability registry.
+# Organ: ledger.governance_chain (Hive blockchain integration — custom_json messaging + Lightning tips)
+# Source: README.md + client/src/lib + server/services
+
+- name: hive-messenger-pwa
+  organ: ledger.governance_chain
+  surface_type: pwa_app
+  surface_path: client/src/pages/Messages.tsx
+  description: Decentralized E2EE messaging Progressive Web App. Users sign in via Hive Keychain and exchange end-to-end encrypted messages over the Hive blockchain (FREE custom_json operations + legacy memo-transfer fallback).
+  status: LIVE
+  source_file: client/src/pages/Messages.tsx
+
+- name: custom-json-message-send
+  organ: ledger.governance_chain
+  surface_type: library_function
+  surface_path: client/src/lib/customJsonEncryption.ts
+  description: Client-side ECDH+AES-256-CBC encryption via Hive Keychain, broadcast as custom_json to Hive blockchain (0.000 HBD cost, only Resource Credits consumed). SHA-256 integrity hash on every payload.
+  status: LIVE
+  source_file: client/src/lib/customJsonEncryption.ts
+
+- name: blockchain-replay-engine
+  organ: ledger.governance_chain
+  surface_type: library_function
+  surface_path: client/src/lib/replayEngine.ts
+  description: Full account-history crawler with persistent IndexedDB sync cursors. Paginates backward through ALL account history (1000 ops/page, dual filters for transfers + custom_json) so old messages are never lost across long inactivity or cache clears.
+  status: LIVE
+  source_file: client/src/lib/replayEngine.ts
+
+- name: block-indexer-service
+  organ: ledger.governance_chain
+  surface_type: http_route
+  surface_path: /api/history/:user/messages
+  description: Server-side block indexer that scans irreversible Hive blocks sequentially (20 blocks/batch, 10s polling) and serves gap-fill REST queries for historical messages, conversation discovery, and indexer status. Crash-safe cursor advances only after full block processed.
+  status: LIVE
+  source_file: server/services/chainIndexer.ts
+
+- name: lightning-tip-bridge
+  organ: ledger.governance_chain
+  surface_type: library_function
+  surface_path: client/src/lib/lightning.ts
+  description: Bitcoin Lightning tipping with three payment paths — V4V.app HBD-to-Lightning bridge (0.8% fee), manual BOLT11 invoice/QR copy, and one-click WebLN browser wallets (Alby etc). BOLT11 validation (amount, expiry, network) before payment.
+  status: LIVE
+  source_file: client/src/lib/lightning.ts
