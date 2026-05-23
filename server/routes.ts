@@ -70,7 +70,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // SECURITY FIX: Extract authoritative memo key from blockchain
-      const blockchainMemoKey = blockchainAccount.memo_key;
+      const blockchainMemoKey = String(blockchainAccount.memo_key || "");
       if (!blockchainMemoKey) {
         return res.status(500).json({
           error: 'Invalid account',
@@ -83,7 +83,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         username,
         keychainProof.message,
         keychainProof.signature,
-        blockchainPostingKey  // Use blockchain key, not client-supplied
+        String(blockchainPostingKey)  // Use blockchain key, not client-supplied
       );
 
       if (!isValidSignature) {
