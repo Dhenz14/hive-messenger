@@ -6,6 +6,8 @@ import type { Message, Conversation } from "@shared/schema";
 import { blockchainOps } from "@shared/schema";
 import { hiveClient } from "../client/src/lib/hiveClient";
 import {
+  consumeAuthChallenge,
+  createAuthChallenge,
   createSession,
   getSession,
   invalidateSession,
@@ -20,6 +22,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================================================
   // Authentication Endpoints
   // ============================================================================
+
+  // POST /api/auth/challenge - Create a one-time Keychain message for login
+  app.post("/api/auth/challenge", (req, res) => {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({
+        error: 'Invalid request',
+        message: 'Username is required'
+      });
+    }
+
+    const challenge = createAuthChallenge(username);
+
+    res.json({
+      username: challenge.username,
+      nonce: challenge.nonce,
+      message: challenge.message,
+      expiresAt: challenge.expiresAt.toISOString(),
+    });
+  });
 
   // POST /api/auth/login - Authenticate with Keychain proof and create session
   app.post("/api/auth/login", async (req, res) => {
@@ -38,6 +61,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({
           error: 'Invalid request',
           message: 'Keychain proof (signature, message) is required'
+        });
+      }
+
+      if (!consumeAuthChallenge(username, keychainProof.message)) {
+        return res.status(401).json({
+          error: 'Authentication failed',
+          message: 'Login challenge is missing, expired, already used, or does not match this account'
         });
       }
 
@@ -168,9 +198,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================================================
 
   // Get conversations for a user
-  app.get("/api/conversations/:username", async (req, res) => {
+  app.get("/api/conversations/:username", requireAuth, async (req: any, res) => {
     try {
       const { username } = req.params;
+
+      if (req.session.username !== username.toLowerCase()) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "You can only read your own conversations"
+        });
+      }
+
       const conversations = await storage.getConversations(username);
       res.json(conversations);
     } catch (error) {
@@ -400,10 +438,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update message status
-  app.patch("/api/messages/:messageId/status", async (req, res) => {
+  app.patch("/api/messages/:messageId/status", requireAuth, async (req: any, res) => {
     try {
       const { messageId } = req.params;
       const { status } = req.body;
+
+      if (!['sending', 'sent', 'confirmed', 'failed'].includes(status)) {
+        return res.status(400).json({ error: "Invalid message status" });
+      }
+
+      const existingMessage = await storage.getMessage(messageId);
+
+      if (!existingMessage) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      if (existingMessage.sender !== req.session.username && existingMessage.recipient !== req.session.username) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "You can only update messages you sent or received"
+        });
+      }
+
       const message = await storage.updateMessageStatus(messageId, status);
       
       if (!message) {
@@ -734,9 +790,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Simulate encrypted message transfer
-  app.post("/api/hive/transfer", async (req, res) => {
+  app.post("/api/hive/transfer", requireAuth, async (req: any, res) => {
     try {
       const { from, to, amount, memo } = req.body;
+
+      if (from !== req.session.username) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "Authenticated user must match transfer sender"
+        });
+      }
       
       // In production, Hive Keychain handles this directly from frontend
       // This endpoint is for testing/simulation only
@@ -753,9 +816,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get contacts for a user
-  app.get("/api/contacts/:username", async (req, res) => {
+  app.get("/api/contacts/:username", requireAuth, async (req: any, res) => {
     try {
       const { username } = req.params;
+
+      if (req.session.username !== username.toLowerCase()) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "You can only read your own contacts"
+        });
+      }
+
       const contacts = await storage.getContacts(username);
       res.json(contacts);
     } catch (error) {
@@ -765,9 +836,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Add a contact
-  app.post("/api/contacts/:username", async (req, res) => {
+  app.post("/api/contacts/:username", requireAuth, async (req: any, res) => {
     try {
       const { username } = req.params;
+
+      if (req.session.username !== username.toLowerCase()) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "You can only add contacts to your own account"
+        });
+      }
+
       const contactData = req.body;
       const contact = await storage.addContact(username, contactData);
       res.json(contact);
@@ -783,13 +862,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // GET /api/history/:username/messages - Query indexed messages for a conversation
   // Used by client for gap-fill when local IndexedDB has holes
-  app.get("/api/history/:username/messages", async (req, res) => {
+  app.get("/api/history/:username/messages", requireAuth, async (req: any, res) => {
     try {
       const { username } = req.params;
       const partner = req.query.partner as string;
       const before = req.query.before as string;
       const after = req.query.after as string;
       const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 500);
+
+      if (req.session.username !== username.toLowerCase()) {
+        return res.status(403).json({
+          error: 'Forbidden',
+          message: 'You can only read your own indexed message history',
+        });
+      }
 
       if (!partner) {
         return res.status(400).json({
@@ -836,9 +922,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // GET /api/history/:username/conversations - Discover all conversation partners
   // Returns all unique partners from the indexed blockchain ops
-  app.get("/api/history/:username/conversations", async (req, res) => {
+  app.get("/api/history/:username/conversations", requireAuth, async (req: any, res) => {
     try {
       const { username } = req.params;
+
+      if (req.session.username !== username.toLowerCase()) {
+        return res.status(403).json({
+          error: 'Forbidden',
+          message: 'You can only discover your own indexed conversations',
+        });
+      }
 
       // Find all unique partners where user is sender or recipient
       const asSender = await db.select({
