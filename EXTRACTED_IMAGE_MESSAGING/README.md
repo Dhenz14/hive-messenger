@@ -6,6 +6,8 @@ This is the **complete custom_json image messaging system** extracted from Hive 
 
 **IMPORTANT**: This module is **separate** from the memo-based text messaging system. It uses a completely different blockchain operation type (`custom_json` vs `transfer` with memos).
 
+**Generated source status: synced-copy.** The copyable source files in this package are synced from live `client/src` files. Run `npm run check:extracted-image-messaging` before release to verify they have not drifted.
+
 ## 📦 What's Included
 
 ### Core Libraries (`lib/`)

@@ -3,15 +3,15 @@ COMPLETE FILE INVENTORY - Hive Messenger Image Messaging Module
 
 Core Library Files (client/src/lib/)
 ------------------------------------
-✅ imageChunking.ts               - 263 lines - Chunk & broadcast logic
-✅ customJsonEncryption.ts        - 280 lines - Encryption/decryption
+✅ imageChunking.ts               - 265 lines - Chunk & broadcast logic
+✅ customJsonEncryption.ts        - 415 lines - Encryption/decryption
 ✅ imageUtils.ts                  - 334 lines - Image processing pipeline
 ✅ compression.ts                 - 79 lines  - Gzip utilities
-✅ rcEstimation.ts                - 153 lines - RC management
+✅ rcEstimation.ts                - 156 lines - RC management
 
 React Components (client/src/components/)
 -----------------------------------------
-✅ ImageMessage.tsx               - 210 lines - Image display component
+✅ ImageMessage.tsx               - 222 lines - Image display component
 
 React Hooks (client/src/hooks/)
 -------------------------------

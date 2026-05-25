@@ -4,6 +4,8 @@
 
 This `EXTRACTED_IMAGE_MESSAGING/` folder contains a **complete, production-ready image messaging system** for Hive blockchain applications.
 
+**Generated source status: synced-copy.** The copyable source files are synced from live `client/src` files and guarded by `npm run check:extracted-image-messaging`.
+
 ```
 EXTRACTED_IMAGE_MESSAGING/
 ├── README.md                           # Main documentation
@@ -11,14 +13,14 @@ EXTRACTED_IMAGE_MESSAGING/
 ├── PACKAGE_SUMMARY.md                  # This file
 │
 ├── lib/                                # Core libraries
-│   ├── imageChunking.ts                # Chunking & broadcasting (289 lines)
-│   ├── customJsonEncryption.ts         # Encryption & decryption (280 lines)
+│   ├── imageChunking.ts                # Chunking & broadcasting (265 lines)
+│   ├── customJsonEncryption.ts         # Encryption & decryption (415 lines)
 │   ├── imageUtils.ts                   # Image processing (334 lines)
 │   ├── compression.ts                  # Gzip utilities (79 lines)
-│   └── rcEstimation.ts                 # RC management (153 lines)
+│   └── rcEstimation.ts                 # RC management (156 lines)
 │
 ├── components/                         # React components
-│   └── ImageMessage.tsx                # Image display component (210 lines)
+│   └── ImageMessage.tsx                # Image display component (222 lines)
 │
 ├── hooks/                              # React hooks
 │   └── useCustomJsonMessages.ts        # Data fetching hook (143 lines)
@@ -37,7 +39,7 @@ EXTRACTED_IMAGE_MESSAGING/
 ## 📊 Statistics
 
 - **Total Files**: 12
-- **Total Lines of Code**: ~1,900 lines
+- **Total Lines of Code**: ~2,000 lines
 - **Languages**: TypeScript, React
 - **Dependencies**: @hiveio/dhive, pako, idb
 - **Browser Support**: Modern browsers (Chrome, Firefox, Edge, Safari)

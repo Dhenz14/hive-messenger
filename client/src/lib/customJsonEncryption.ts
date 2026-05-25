@@ -2,7 +2,7 @@
  * Custom JSON encryption module for Hive Messenger
  * Handles payload optimization, encryption, and integrity verification
  * Supports both text messages and image messages
- * 
+ *
  * @module customJsonEncryption
  */
 
@@ -54,7 +54,7 @@ interface OptimizedPayload {
 
 /**
  * Generate SHA-256 hash for integrity verification
- * 
+ *
  * @param data - String data to hash
  * @returns Promise<string> - Hex-encoded hash
  */
@@ -68,7 +68,7 @@ export async function generateSHA256(data: string): Promise<string> {
 
 /**
  * Request encryption from Hive Keychain
- * 
+ *
  * @param message - Message to encrypt (should start with #)
  * @param senderUsername - Sender's Hive username
  * @param recipientUsername - Recipient's Hive username
@@ -104,7 +104,7 @@ async function requestKeychainEncryption(
 
 /**
  * Request decryption from Hive Keychain
- * 
+ *
  * @param encryptedMessage - Encrypted message to decrypt
  * @param username - User's Hive username
  * @returns Promise<string> - Decrypted message
@@ -137,12 +137,12 @@ async function requestKeychainDecryption(
 
 /**
  * Encrypt a text message payload for blockchain storage
- * 
+ *
  * Process:
  * 1. Create optimized JSON with short keys (saves 25-30%)
  * 2. Generate SHA-256 hash for integrity
  * 3. Encrypt via Hive Keychain (memo key)
- * 
+ *
  * @param payload - Text payload to encrypt
  * @param senderUsername - Sender's username
  * @returns Promise<{ encrypted: string; hash: string }>
@@ -188,17 +188,17 @@ export async function encryptTextPayload(
 
 /**
  * Decrypt an encrypted text message payload
- * 
+ *
  * Process:
  * 1. Decrypt via Hive Keychain
  * 2. Verify integrity hash (if provided)
  * 3. Parse and expand JSON
- * 
+ *
  * @param encryptedPayload - Encrypted payload from blockchain
  * @param username - User's username for decryption
  * @param expectedHash - Optional SHA-256 hash for verification
  * @returns Promise<TextPayload>
- * 
+ *
  * @throws Error if integrity check fails
  */
 export async function decryptTextPayload(
@@ -253,19 +253,19 @@ export async function decryptTextPayload(
 
 /**
  * Encrypt an image payload for blockchain storage
- * 
+ *
  * Process:
  * 1. Create optimized JSON with short keys (saves 25-30%)
  * 2. Generate SHA-256 hash for integrity
  * 3. Encrypt via Hive Keychain (memo key)
- * 
+ *
  * Note: Gzip compression is skipped for images because base64-encoded image data
  * doesn't compress well (~99% size). WebP images are already compressed.
- * 
+ *
  * @param payload - Image payload to encrypt
  * @param senderUsername - Sender's username
  * @returns Promise<{ encrypted: string; hash: string }>
- * 
+ *
  * @example
  * const { encrypted, hash } = await encryptImagePayload(payload, 'alice');
  * console.log(`Encrypted size: ${encrypted.length}, Hash: ${hash.substring(0, 8)}...`);
@@ -320,17 +320,17 @@ export async function encryptImagePayload(
 
 /**
  * Decrypt an encrypted image payload
- * 
+ *
  * Process:
  * 1. Decrypt via Hive Keychain
  * 2. Verify integrity hash (if provided)
  * 3. Parse and expand JSON (no decompression - gzip skipped for images)
- * 
+ *
  * @param encryptedPayload - Encrypted payload from blockchain
  * @param username - User's username for decryption
  * @param expectedHash - Optional SHA-256 hash for verification
  * @returns Promise<ImagePayload>
- * 
+ *
  * @throws Error if integrity check fails
  */
 export async function decryptImagePayload(
@@ -371,19 +371,19 @@ export async function decryptImagePayload(
   // The imageData field contains gzipped WebP binary encoded as base64
   // We need to decompress it back to WebP binary, then re-encode as base64 for display
   console.log('[DECRYPT] Decompressing gzipped image data...');
-  
+
   let finalImageData: string;
   try {
     // Import the decompression function
     const { decompressBinaryFromBase64 } = await import('./imageUtils');
-    
+
     // Decompress gzipped base64 to WebP binary
     const webpBinary = decompressBinaryFromBase64(optimized.i);
-    
+
     // Convert WebP binary to base64 for display in <img> tags
     const binaryString = Array.from(webpBinary).map(byte => String.fromCharCode(byte)).join('');
     finalImageData = btoa(binaryString);
-    
+
     console.log('[DECRYPT] Image decompressed:', {
       compressedSize: optimized.i.length,
       decompressedSize: finalImageData.length,

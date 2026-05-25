@@ -15,13 +15,20 @@ interface ImageMessageProps {
 export function ImageMessage({ message, currentUsername, className }: ImageMessageProps) {
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [decryptError, setDecryptError] = useState<string | null>(null);
+  const [decryptedData, setDecryptedData] = useState<{
+    imageData?: string;
+    message?: string;
+    filename?: string;
+    contentType?: string;
+  } | null>(message.isDecrypted ? message : null);
   const { toast } = useToast();
 
   const isSentByMe = message.from === currentUsername;
+  const isDecrypted = message.isDecrypted || !!decryptedData;
 
   // Handle decryption on demand
   const handleDecrypt = async () => {
-    if (message.isDecrypted) return; // Already decrypted
+    if (isDecrypted) return; // Already decrypted
 
     setIsDecrypting(true);
     setDecryptError(null);
@@ -50,12 +57,13 @@ export function ImageMessage({ message, currentUsername, className }: ImageMessa
         currentUsername
       );
 
-      // Update local state (parent will re-render)
-      message.imageData = decrypted.imageData;
-      message.message = decrypted.message;
-      message.filename = decrypted.filename;
-      message.contentType = decrypted.contentType;
-      message.isDecrypted = true;
+      // Update local state via React state (not prop mutation)
+      setDecryptedData({
+        imageData: decrypted.imageData,
+        message: decrypted.message,
+        filename: decrypted.filename,
+        contentType: decrypted.contentType,
+      });
 
       toast({
         title: 'Image Decrypted',
@@ -76,20 +84,25 @@ export function ImageMessage({ message, currentUsername, className }: ImageMessa
     }
   };
 
+  // Resolved data: prefer local state, fall back to message props
+  const imgData = decryptedData?.imageData || message.imageData;
+  const imgCaption = decryptedData?.message || message.message;
+  const imgFilename = decryptedData?.filename || message.filename;
+  const imgContentType = decryptedData?.contentType || message.contentType;
+
   // Handle download
   const handleDownload = () => {
-    if (!message.imageData || !message.isDecrypted) return;
+    if (!imgData || !isDecrypted) return;
 
     try {
-      // Create download link
       const link = document.createElement('a');
-      link.href = `data:${message.contentType};base64,${message.imageData}`;
-      link.download = message.filename || 'image.webp';
+      link.href = `data:${imgContentType};base64,${imgData}`;
+      link.download = imgFilename || 'image.webp';
       link.click();
 
       toast({
         title: 'Download Started',
-        description: `Downloading ${message.filename}`,
+        description: `Downloading ${imgFilename}`,
       });
     } catch (error) {
       toast({
@@ -116,12 +129,12 @@ export function ImageMessage({ message, currentUsername, className }: ImageMessa
           isSentByMe ? 'bg-primary text-primary-foreground' : 'bg-muted'
         )}
       >
-        {message.isDecrypted ? (
+        {isDecrypted ? (
           // Decrypted: Show image
           <div className="relative group">
             <img
-              src={`data:${message.contentType};base64,${message.imageData}`}
-              alt={message.filename || 'Image'}
+              src={`data:${imgContentType};base64,${imgData}`}
+              alt={imgFilename || 'Image'}
               className="max-w-full h-auto max-h-96"
               data-testid="img-decrypted"
             />
@@ -181,7 +194,7 @@ export function ImageMessage({ message, currentUsername, className }: ImageMessa
       </div>
 
       {/* Optional text message */}
-      {message.message && message.isDecrypted && (
+      {imgCaption && isDecrypted && (
         <div
           className={cn(
             'px-3 py-2 rounded-lg text-sm',
@@ -189,14 +202,14 @@ export function ImageMessage({ message, currentUsername, className }: ImageMessa
           )}
           data-testid="text-image-caption"
         >
-          {message.message}
+          {imgCaption}
         </div>
       )}
 
       {/* Metadata */}
       <div className="text-xs text-muted-foreground flex items-center gap-2">
-        {message.isDecrypted && message.filename && (
-          <span data-testid="text-filename">{message.filename}</span>
+        {isDecrypted && imgFilename && (
+          <span data-testid="text-filename">{imgFilename}</span>
         )}
         {message.hash && (
           <span className="opacity-70" data-testid="text-hash">
