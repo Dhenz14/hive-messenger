@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   getConversationMessages,
+  getCustomJsonMessages,
   getCustomJsonTextMessages,
   discoverConversations,
 } from '@/lib/hive';
@@ -40,6 +41,53 @@ function isCorruptedMessage(msg: MessageCache): boolean {
   if (msg.content?.includes('[Encrypted') &&
       msg.content !== '[🔒 Encrypted - Click to decrypt]') return true;
   return false;
+}
+
+type ConversationHistoryOp = {
+  txId: string;
+  from: string;
+  to: string;
+  opType: 'transfer' | 'custom_json_text' | 'custom_json_img';
+  payload: string;
+  timestamp: string;
+  hash?: string;
+  amount?: string;
+  sessionId?: string;
+  chunkIndex?: number;
+  totalChunks?: number;
+};
+
+async function fetchServerHistoryMessages(
+  username: string,
+  partnerUsername: string,
+  limit = 200,
+): Promise<ConversationHistoryOp[]> {
+  const params = new URLSearchParams({
+    partner: partnerUsername,
+    limit: String(limit),
+  });
+  const response = await fetch(`/api/history/${encodeURIComponent(username)}/messages?${params}`, {
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    return [];
+  }
+
+  const data = await response.json();
+  const rows = Array.isArray(data?.messages) ? data.messages : [];
+  return rows.map((row: any) => ({
+    txId: row.txId,
+    from: row.sender,
+    to: row.recipient,
+    opType: row.opType,
+    payload: row.payload || '',
+    timestamp: typeof row.timestamp === 'string' ? row.timestamp : new Date(row.timestamp).toISOString(),
+    hash: row.hash || undefined,
+    amount: row.amount || undefined,
+    sessionId: row.sessionId || undefined,
+    chunkIndex: row.chunkIndex ?? undefined,
+    totalChunks: row.totalChunks ?? undefined,
+  })).filter((row: ConversationHistoryOp) => row.txId && row.from && row.to && row.opType);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,41 +215,115 @@ export function useBlockchainMessages({
 
       // 3) Read indexed ops from replay engine (already populated by background sync)
       try {
-        const indexedOps = await getIndexedOpsByConversation(user.username, partnerUsername);
-
         const newMessages: MessageCache[] = [];
-        for (const op of indexedOps) {
-          if (merged.has(op.txId)) continue;
-          if (op.sessionId && op.chunkIndex !== undefined && op.chunkIndex > 0) continue;
-
+        const addHistoryMessage = (
+          op: ConversationHistoryOp,
+          encryptedContent = op.payload,
+          hash = op.hash,
+          chunks?: number,
+        ) => {
+          if (merged.has(op.txId)) return;
           const isSent = op.from === user.username;
           const shouldHide = op.opType === 'transfer' && !isSent &&
             !isException(op.from) && parseHBDAmount(op.amount || '0') < userMinimumAmount;
+          const messageType = op.opType === 'transfer'
+            ? 'memo'
+            : op.opType === 'custom_json_img'
+              ? 'customJsonImage'
+              : 'customJsonText';
 
-          newMessages.push({
+          const message: MessageCache = {
             id: op.txId,
             conversationKey,
             from: op.from,
             to: op.to,
-            content: '[🔒 Encrypted - Click to decrypt]',
-            encryptedContent: op.payload,
+            content: messageType === 'customJsonImage'
+              ? '[🔒 Encrypted Image - Click to decrypt]'
+              : '[🔒 Encrypted - Click to decrypt]',
+            encryptedContent,
             timestamp: op.timestamp,
             txId: op.txId,
             confirmed: true,
             amount: op.amount,
             hidden: shouldHide,
-            messageType: op.opType === 'transfer' ? 'memo' : 'customJsonText',
-            hash: op.hash,
+            messageType,
+            hash,
+            chunks,
+          };
+          newMessages.push(message);
+          merged.set(op.txId, message);
+        };
+
+        const ingestHistoryOps = (ops: ConversationHistoryOp[]) => {
+          const chunkedImages = new Map<string, ConversationHistoryOp[]>();
+
+          for (const op of ops) {
+            if (op.opType === 'custom_json_img' && op.sessionId) {
+              if (!chunkedImages.has(op.sessionId)) {
+                chunkedImages.set(op.sessionId, []);
+              }
+              chunkedImages.get(op.sessionId)!.push(op);
+              continue;
+            }
+            addHistoryMessage(op);
+          }
+
+          Array.from(chunkedImages.values()).forEach((chunks) => {
+            const totalChunks = chunks[0]?.totalChunks || chunks.length;
+            const sorted = [...chunks].sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
+            const hasAllChunks =
+              sorted.length === totalChunks &&
+              sorted.every((chunk, index) => chunk.chunkIndex === index);
+            if (!hasAllChunks) return;
+
+            const first = sorted[0];
+            if (!first) return;
+            addHistoryMessage(
+              first,
+              sorted.map((chunk) => chunk.payload).join(''),
+              sorted.find((chunk) => chunk.hash)?.hash,
+              sorted.length,
+            );
           });
-          merged.set(op.txId, newMessages[newMessages.length - 1]);
+        };
+
+        const indexedOps = await getIndexedOpsByConversation(user.username, partnerUsername);
+        ingestHistoryOps(indexedOps.map((op) => ({
+          txId: op.txId,
+          from: op.from,
+          to: op.to,
+          opType: op.opType,
+          payload: op.payload,
+          timestamp: op.timestamp,
+          hash: op.hash,
+          amount: op.amount,
+          sessionId: op.sessionId,
+          chunkIndex: op.chunkIndex,
+          totalChunks: op.totalChunks,
+        })));
+
+        const [recentTransfers, recentCustomJson, recentImages, serverHistory] = await Promise.all([
+          getConversationMessages(user.username, partnerUsername, 50).catch(() => []),
+          getCustomJsonTextMessages(user.username, partnerUsername, 50).catch(() => []),
+          getCustomJsonMessages(user.username, partnerUsername, 100).catch(() => []),
+          fetchServerHistoryMessages(user.username, partnerUsername, 200).catch(() => []),
+        ]);
+
+        ingestHistoryOps(serverHistory);
+
+        for (const img of recentImages) {
+          const mc: MessageCache = {
+            id: img.txId, conversationKey, from: img.from, to: img.to,
+            content: '[🔒 Encrypted Image - Click to decrypt]', encryptedContent: img.encryptedPayload,
+            timestamp: img.timestamp, txId: img.txId, confirmed: true,
+            messageType: 'customJsonImage', hash: img.hash, hidden: false, chunks: img.chunks,
+          };
+          if (merged.has(mc.id)) continue;
+          newMessages.push(mc);
+          merged.set(mc.id, mc);
         }
 
         // 4) Fetch last 50 recent ops for real-time recency (lightweight)
-        const [recentTransfers, recentCustomJson] = await Promise.all([
-          getConversationMessages(user.username, partnerUsername, 50).catch(() => []),
-          getCustomJsonTextMessages(user.username, partnerUsername, 50).catch(() => []),
-        ]);
-
         for (const msg of recentTransfers) {
           if (merged.has(msg.trx_id)) continue;
           const isSent = msg.from === user.username;

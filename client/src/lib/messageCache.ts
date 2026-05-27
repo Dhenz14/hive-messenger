@@ -16,6 +16,11 @@ interface MessageCache {
   hidden?: boolean; // Flag for messages filtered by minimum HBD threshold
   messageType?: 'memo' | 'customJsonText' | 'customJsonImage'; // Message type discriminator
   hash?: string; // SHA-256 integrity hash for custom_json messages
+  imageData?: string;
+  imageCaption?: string;
+  imageFilename?: string;
+  imageContentType?: string;
+  chunks?: number;
 }
 
 interface ConversationCache {
@@ -531,13 +536,19 @@ export async function confirmMessage(tempId: string, txId: string, encryptedCont
   }
 }
 
-export async function updateMessageContent(messageId: string, decryptedContent: string, username?: string): Promise<void> {
+export async function updateMessageContent(
+  messageId: string,
+  decryptedContent: string,
+  username?: string,
+  updates: Partial<Pick<MessageCache, 'imageData' | 'imageCaption' | 'imageFilename' | 'imageContentType' | 'chunks'>> = {}
+): Promise<void> {
   const db = await getDB(username);
   const message = await db.get('messages', messageId);
   
   if (message) {
     message.content = decryptedContent;
     message.isDecrypted = true; // Mark as manually decrypted - don't touch it!
+    Object.assign(message, updates);
     await db.put('messages', message);
   }
 }

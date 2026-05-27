@@ -83,9 +83,10 @@ export async function getCustomJsonMessages(
 
       // Verify this is between the two users
       const from = customJson.required_posting_auths[0];
+      const recipient = payload.to || payload.t;
       if (
         (from !== username && from !== partnerUsername) ||
-        (!payload.t || (payload.t !== username && payload.t !== partnerUsername))
+        (!recipient || (recipient !== username && recipient !== partnerUsername))
       ) {
         continue;
       }
@@ -96,13 +97,17 @@ export async function getCustomJsonMessages(
         if (!chunkedSessions.has(payload.sid)) {
           chunkedSessions.set(payload.sid, []);
         }
-        chunkedSessions.get(payload.sid)!.push(payload);
+        chunkedSessions.get(payload.sid)!.push({
+          ...payload,
+          from,
+          timestamp: op[1].timestamp,
+        });
       } else {
         // Single operation
         singleOperations.push({
           txId: op[1].trx_id || `${op[1].block}-${op[1].trx_in_block}`,
           from,
-          to: payload.t,
+          to: recipient,
           timestamp: op[1].timestamp,
           encryptedPayload: payload.e,
           hash: payload.h,
@@ -124,9 +129,9 @@ export async function getCustomJsonMessages(
         operations.push({
           txId: sessionId,
           sessionId: sid,
-          from: username, // Assumes current user is sender for chunked messages
-          to: partnerUsername,
-          timestamp: new Date().toISOString(), // You may want to extract from operation
+          from: firstChunk.from || username,
+          to: firstChunk.to || firstChunk.t || partnerUsername,
+          timestamp: firstChunk.timestamp || new Date().toISOString(),
           encryptedPayload: encrypted,
           hash,
           chunks: chunks.length,

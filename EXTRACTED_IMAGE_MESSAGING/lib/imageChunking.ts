@@ -75,12 +75,16 @@ export function chunkEncryptedPayload(
  */
 export async function broadcastImageMessage(
   username: string,
+  recipientUsername: string,
   encrypted: string,
   hash: string
 ): Promise<string> {
   // Estimate JSON size with metadata
   const estimatedJsonSize = JSON.stringify({
     v: 1,
+    type: 'image',
+    to: recipientUsername,
+    t: recipientUsername,
     e: encrypted,
     h: hash
   }).length;
@@ -94,11 +98,11 @@ export async function broadcastImageMessage(
   if (estimatedJsonSize <= 7500) {
     // Single operation - simple path
     console.log('[BROADCAST] Using single operation (under threshold)');
-    return await broadcastSingleOperation(username, encrypted, hash);
+    return await broadcastSingleOperation(username, recipientUsername, encrypted, hash);
   } else {
     // Multi-chunk - batched transaction
     console.log('[BROADCAST] Using chunked operations (over threshold)');
-    return await broadcastChunkedOperation(username, encrypted, hash);
+    return await broadcastChunkedOperation(username, recipientUsername, encrypted, hash);
   }
 }
 
@@ -112,6 +116,7 @@ export async function broadcastImageMessage(
  */
 async function broadcastSingleOperation(
   username: string,
+  recipientUsername: string,
   encrypted: string,
   hash: string
 ): Promise<string> {
@@ -123,6 +128,9 @@ async function broadcastSingleOperation(
 
     const payload = JSON.stringify({
       v: 1,     // Version
+      type: 'image',
+      to: recipientUsername,
+      t: recipientUsername,
       e: encrypted,
       h: hash   // Integrity hash
     });
@@ -159,6 +167,7 @@ async function broadcastSingleOperation(
  */
 async function broadcastChunkedOperation(
   username: string,
+  recipientUsername: string,
   encrypted: string,
   hash: string
 ): Promise<string> {
@@ -173,6 +182,9 @@ async function broadcastChunkedOperation(
       id: 'hive-messenger-img',
       json: JSON.stringify({
         v: 1,
+        type: 'image',
+        to: recipientUsername,
+        t: recipientUsername,
         sid: sessionId,
         idx: chunk.idx,
         tot: chunks.length,
