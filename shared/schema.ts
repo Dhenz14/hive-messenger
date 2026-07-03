@@ -185,6 +185,11 @@ export interface Message {
   isEncrypted: boolean;
   messageType?: 'memo' | 'customJsonText' | 'customJsonImage';
   hash?: string;
+  imageData?: string;
+  imageCaption?: string;
+  imageFilename?: string;
+  imageContentType?: string;
+  chunks?: number;
 }
 
 export interface Conversation {

@@ -53,6 +53,11 @@ const mapMessageCacheToMessage = (msg: MessageCache, conversationId: string): Me
   isEncrypted: true,
   messageType: msg.messageType || 'memo', // Default to 'memo' for backwards compatibility
   hash: msg.hash,
+  imageData: msg.imageData,
+  imageCaption: msg.imageCaption,
+  imageFilename: msg.imageFilename,
+  imageContentType: msg.imageContentType,
+  chunks: msg.chunks,
 });
 
 const mapConversationCacheToConversation = (conv: ConversationCache): Conversation => ({

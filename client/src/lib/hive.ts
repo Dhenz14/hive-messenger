@@ -770,15 +770,19 @@ export async function getCustomJsonMessages(
       const sender = opData.required_posting_auths?.[0];
       if (!sender) continue;
       
+      const explicitRecipient = jsonData.to || jsonData.t;
+      const inferredRecipient = sender === username ? partnerUsername : username;
+      const recipient = explicitRecipient || inferredRecipient;
+
       // Check if this involves our conversation (either direction)
-      const isRelevant = (sender === username || sender === partnerUsername);
+      const isRelevant =
+        (sender === username && recipient === partnerUsername) ||
+        (sender === partnerUsername && recipient === username);
       if (!isRelevant) continue;
-      
+
       // Determine the "from" and "to" for this operation
       const from = sender;
-      // For custom_json, we need to extract recipient from encrypted payload later
-      // For now, assume partner is the "to" if sender is us, and vice versa
-      const to = sender === username ? partnerUsername : username;
+      const to = recipient;
       
       if (jsonData.sid) {
         // Multi-chunk message

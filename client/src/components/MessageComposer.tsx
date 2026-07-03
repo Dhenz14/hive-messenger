@@ -194,11 +194,11 @@ export function MessageComposer({
         duration: 60000,
       });
 
-      const txId = await broadcastImageMessage(user.username, encrypted, hash);
+      const txId = await broadcastImageMessage(user.username, recipientUsername, encrypted, hash);
       logger.info('[IMAGE] Broadcast success, txId:', txId);
 
       // Step 5: Cache locally with UNCOMPRESSED base64 for display
-      const conversationKey = [user.username, recipientUsername].sort().join('-');
+      const conversationKey = getConversationKey(user.username, recipientUsername);
       await cacheCustomJsonMessage({
         txId,
         conversationKey,
@@ -213,6 +213,24 @@ export function MessageComposer({
         hash,
         isDecrypted: true,
         confirmed: true
+      }, user.username);
+      await cacheMessage({
+        id: txId,
+        conversationKey,
+        from: user.username,
+        to: recipientUsername,
+        content: content.trim() || selectedImage.name,
+        encryptedContent: encrypted,
+        timestamp: new Date().toISOString(),
+        txId,
+        confirmed: true,
+        isDecrypted: true,
+        messageType: 'customJsonImage',
+        hash,
+        imageData: processedImage.base64Uncompressed,
+        imageCaption: content.trim() || undefined,
+        imageFilename: selectedImage.name,
+        imageContentType: processedImage.contentType,
       }, user.username);
 
       // Success!
