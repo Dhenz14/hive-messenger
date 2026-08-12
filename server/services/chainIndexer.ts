@@ -150,7 +150,7 @@ async function scanBlocks(): Promise<number> {
           jsonData = JSON.parse((opData as any).json || '{}');
         } catch { continue; }
 
-        const recipient = jsonData.to || '';
+        const recipient = jsonData.to || jsonData.t || '';
         const opTypeStr = cjId === 'hive-messenger-text' ? 'custom_json_text' : 'custom_json_img';
 
         try {

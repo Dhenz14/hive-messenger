@@ -83,9 +83,10 @@ export async function getCustomJsonMessages(
 
       // Verify this is between the two users
       const from = customJson.required_posting_auths[0];
+      const recipient = payload.to || payload.t;
       if (
         (from !== username && from !== partnerUsername) ||
-        (!payload.t || (payload.t !== username && payload.t !== partnerUsername))
+        (!recipient || (recipient !== username && recipient !== partnerUsername))
       ) {
         continue;
       }
@@ -102,7 +103,7 @@ export async function getCustomJsonMessages(
         singleOperations.push({
           txId: op[1].trx_id || `${op[1].block}-${op[1].trx_in_block}`,
           from,
-          to: payload.t,
+          to: recipient,
           timestamp: op[1].timestamp,
           encryptedPayload: payload.e,
           hash: payload.h,
@@ -124,8 +125,8 @@ export async function getCustomJsonMessages(
         operations.push({
           txId: sessionId,
           sessionId: sid,
-          from: username, // Assumes current user is sender for chunked messages
-          to: partnerUsername,
+          from: chunks[0]?.from || username,
+          to: firstChunk.to || firstChunk.t || partnerUsername,
           timestamp: new Date().toISOString(), // You may want to extract from operation
           encryptedPayload: encrypted,
           hash,

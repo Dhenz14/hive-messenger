@@ -1,10 +1,10 @@
 import { useState, memo } from 'react';
-import { Lock, Check, CheckCheck, Clock, Unlock, ExternalLink, Zap } from 'lucide-react';
+import { Lock, Check, CheckCheck, Clock, Unlock, ExternalLink, Zap, Image as ImageIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Message } from '@shared/schema';
 import { useAuth } from '@/contexts/AuthContext';
 import { decryptMemo } from '@/lib/hive';
-import { decryptTextPayload } from '@/lib/customJsonEncryption';
+import { decryptImagePayload, decryptTextPayload } from '@/lib/customJsonEncryption';
 import { updateMessageContent } from '@/lib/messageCache';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -14,6 +14,29 @@ import { logger } from '@/lib/logger';
 interface TipNotification {
   satsAmount: string;
   txId: string;
+}
+
+const SAFE_IMAGE_CONTENT_TYPES = new Set([
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+function safeImageDataUrl(imageData?: string, declaredContentType?: string): string {
+  if (!imageData) return '';
+
+  const embedded = imageData.match(
+    /^data:(image\/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/i,
+  );
+  const base64 = embedded ? embedded[2] : imageData;
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(base64)) return '';
+
+  const candidateContentType = declaredContentType?.toLowerCase() || embedded?.[1].toLowerCase();
+  const contentType = candidateContentType && SAFE_IMAGE_CONTENT_TYPES.has(candidateContentType)
+    ? candidateContentType
+    : 'image/webp';
+  return `data:${contentType};base64,${base64.replace(/\s/g, '')}`;
 }
 
 // Helper function to detect and parse Lightning tip notifications
@@ -51,8 +74,13 @@ export const MessageBubble = memo(function MessageBubble({ message, isSent, show
   const queryClient = useQueryClient();
   const [isDecrypting, setIsDecrypting] = useState(false);
 
-  const isEncryptedPlaceholder = 
+  const isImageMessage = message.messageType === 'customJsonImage';
+  const imageData = message.imageData;
+  const imageSrc = safeImageDataUrl(imageData, message.imageContentType);
+  const imageCaption = message.imageCaption || (message.content && !message.content.startsWith('[🔒 Encrypted') ? message.content : '');
+  const isEncryptedPlaceholder =
     message.content === '[🔒 Encrypted - Click to decrypt]' ||
+    message.content.startsWith('[🔒 Encrypted') ||
     message.content.includes('[Encrypted');
   
   // Detect Lightning tip notifications
@@ -81,7 +109,23 @@ export const MessageBubble = memo(function MessageBubble({ message, isSent, show
       let decrypted: string | null = null;
       
       // Hybrid decryption: Check messageType and use appropriate decryption method
-      if (message.messageType === 'customJsonText') {
+      if (message.messageType === 'customJsonImage') {
+        logger.info('[MessageBubble] Decrypting custom_json image message...');
+
+        const imagePayload = await decryptImagePayload(
+          message.encryptedMemo,
+          user.username,
+          message.hash || undefined
+        );
+
+        decrypted = imagePayload.message || imagePayload.filename || 'Image';
+        await updateMessageContent(message.id, decrypted, user.username, {
+          imageData: imagePayload.imageData,
+          imageCaption: imagePayload.message,
+          imageFilename: imagePayload.filename,
+          imageContentType: imagePayload.contentType,
+        });
+      } else if (message.messageType === 'customJsonText') {
         // NEW: Decrypt custom_json text message using TextPayload decryption
         logger.info('[MessageBubble] Decrypting custom_json text message...');
         
@@ -110,7 +154,9 @@ export const MessageBubble = memo(function MessageBubble({ message, isSent, show
 
       if (decrypted) {
         logger.info('[DECRYPT] Updating cache with decrypted content, length:', decrypted.length);
-        await updateMessageContent(message.id, decrypted, user.username);
+        if (message.messageType !== 'customJsonImage') {
+          await updateMessageContent(message.id, decrypted, user.username);
+        }
         logger.info('[DECRYPT] Cache updated successfully');
         
         // Get partner username from message
@@ -200,10 +246,28 @@ export const MessageBubble = memo(function MessageBubble({ message, isSent, show
             : 'bg-card text-card-foreground rounded-bl-md border border-card-border'
         )}
       >
-        {isEncryptedPlaceholder ? (
+        {isImageMessage && imageSrc ? (
           <div className="flex flex-col gap-2">
-            <p className="text-body-lg text-muted-foreground italic">
-              🔒 Encrypted Message {isSent && '(Sent)'}
+            <img
+              src={imageSrc}
+              alt={message.imageFilename || 'Encrypted image'}
+              className="max-h-96 max-w-full rounded-lg object-contain"
+              data-testid={`image-message-${message.id}`}
+            />
+            {imageCaption && (
+              <p className="text-body-lg whitespace-pre-wrap break-words">
+                {imageCaption}
+              </p>
+            )}
+          </div>
+        ) : isEncryptedPlaceholder ? (
+          <div className="flex flex-col gap-2">
+            <p className="text-body-lg text-muted-foreground italic flex items-center gap-2">
+              {isImageMessage ? <ImageIcon className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+              <span>{isImageMessage ? 'Encrypted Image' : 'Encrypted Message'} {isSent && '(Sent)'}</span>
+              {isImageMessage && message.chunks && message.chunks > 1 && (
+                <span className="text-caption">({message.chunks} chunks)</span>
+              )}
             </p>
             <Button
               size="sm"
