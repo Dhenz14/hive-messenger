@@ -259,8 +259,9 @@ See `docs/TESTING_GUIDE.md` for test helpers and mock data generation.
    - Users with low HP may need to wait for RC regeneration
 
 3. **Size constraints**: Each chunk limited to ~7KB
-   - Large images automatically chunked
-   - All chunks broadcast in ONE transaction (atomic)
+   - Images are automatically chunked up to 8 chunks / 56KB encrypted
+   - All admitted chunks broadcast in ONE transaction (atomic)
+   - Larger encrypted payloads fail before broadcast approval or chain submission
 
 4. **Browser compatibility**: Requires modern browser
    - WebP support
@@ -279,7 +280,7 @@ encryptImagePayload(payload: ImagePayload, username: string): Promise<{ encrypte
 decryptImagePayload(encrypted: string, username: string, hash?: string): Promise<ImagePayload>
 
 // Broadcasting
-broadcastImageMessage(username: string, encrypted: string, hash: string): Promise<string>
+broadcastImageMessage(username: string, recipientUsername: string, encrypted: string, hash: string): Promise<string>
 
 // Chunking
 chunkEncryptedPayload(encrypted: string, hash: string): { sessionId: string; chunks: Chunk[] }

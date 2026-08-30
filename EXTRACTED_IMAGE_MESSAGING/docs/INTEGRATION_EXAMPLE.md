@@ -161,7 +161,7 @@ export function MessageComposer({ recipientUsername, onMessageSent }: MessageCom
 
       // Step 6: Broadcast to blockchain
       console.log('[SEND IMAGE] Broadcasting to blockchain...');
-      const txId = await broadcastImageMessage(user.username, encrypted, hash);
+      const txId = await broadcastImageMessage(user.username, recipientUsername, encrypted, hash);
 
       console.log('[SEND IMAGE] ✅ Broadcast successful! TxID:', txId);
 

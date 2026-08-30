@@ -5,7 +5,25 @@
  * @module imageChunking
  */
 
-const CHUNK_SIZE = 7000; // Conservative limit for 8KB after JSON overhead
+export const IMAGE_CHUNK_SIZE = 7000; // Conservative per-operation limit after JSON overhead
+export const MAX_BATCHED_IMAGE_CHUNKS = 8; // 56KB payload + metadata stays below Hive's 64KiB transaction ceiling
+
+const CHUNK_SIZE = IMAGE_CHUNK_SIZE;
+
+export function validateAtomicImagePayloadSize(encrypted: string): number {
+  if (!encrypted) {
+    throw new Error('Encrypted image payload is empty');
+  }
+
+  const chunkCount = Math.ceil(encrypted.length / CHUNK_SIZE);
+  if (chunkCount > MAX_BATCHED_IMAGE_CHUNKS) {
+    throw new Error(
+      `Encrypted image requires ${chunkCount} chunks; the safe atomic Hive limit is ${MAX_BATCHED_IMAGE_CHUNKS}. ` +
+      'Choose a smaller or simpler image.',
+    );
+  }
+  return chunkCount;
+}
 
 /**
  * Chunk metadata for multi-operation messages
@@ -79,6 +97,8 @@ export async function broadcastImageMessage(
   encrypted: string,
   hash: string
 ): Promise<string> {
+  const chunkCount = validateAtomicImagePayloadSize(encrypted);
+
   // Estimate JSON size with metadata
   const estimatedJsonSize = JSON.stringify({
     v: 1,
@@ -92,7 +112,9 @@ export async function broadcastImageMessage(
   console.log('[BROADCAST] Deciding broadcast strategy:', {
     encryptedSize: encrypted.length,
     estimatedJsonSize,
-    threshold: 7500
+    threshold: 7500,
+    chunkCount,
+    maxAtomicChunks: MAX_BATCHED_IMAGE_CHUNKS,
   });
   
   if (estimatedJsonSize <= 7500) {
@@ -172,6 +194,7 @@ async function broadcastChunkedOperation(
   hash: string
 ): Promise<string> {
   const { sessionId, chunks } = chunkEncryptedPayload(encrypted, hash);
+  validateAtomicImagePayloadSize(encrypted);
   
   // Build operations array (all chunks in ONE transaction)
   const operations = chunks.map((chunk) => [
@@ -234,7 +257,7 @@ async function broadcastChunkedOperation(
 export function reassembleChunks(
   chunks: Array<{ sid: string; idx: number; tot: number; e: string; h?: string }>
 ): Map<string, { encrypted: string; hash?: string }> {
-  const sessions = new Map<string, Array<{ idx: number; chunk: string; hash?: string }>>();
+  const sessions = new Map<string, Array<{ idx: number; total: number; chunk: string; hash?: string }>>();
   
   // Group by session ID
   for (const chunk of chunks) {
@@ -243,6 +266,7 @@ export function reassembleChunks(
     }
     sessions.get(chunk.sid)!.push({ 
       idx: chunk.idx, 
+      total: chunk.tot,
       chunk: chunk.e,
       hash: chunk.h
     });
@@ -256,6 +280,21 @@ export function reassembleChunks(
     // Sort by index with explicit types
     sessionChunks.sort((a: { idx: number; chunk: string; hash?: string }, 
                        b: { idx: number; chunk: string; hash?: string }) => a.idx - b.idx);
+
+    const declaredTotal = sessionChunks[0]?.total;
+    const isComplete = typeof declaredTotal === 'number' &&
+      Number.isSafeInteger(declaredTotal) &&
+      declaredTotal > 0 &&
+      sessionChunks.length === declaredTotal &&
+      sessionChunks.every((chunk, index) =>
+        chunk.total === declaredTotal &&
+        chunk.idx === index &&
+        typeof chunk.chunk === 'string'
+      );
+    if (!isComplete) {
+      console.warn(`[REASSEMBLE] Incomplete or inconsistent session ${sessionId}`);
+      return;
+    }
     
     // Concatenate chunks with explicit type
     const fullPayload = sessionChunks.map((c: { idx: number; chunk: string; hash?: string }) => c.chunk).join('');

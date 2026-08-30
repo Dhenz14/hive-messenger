@@ -156,6 +156,7 @@ async function scanBlocks(): Promise<number> {
         try {
           await db.insert(blockchainOps).values({
             txId: op.trx_id,
+            opIndex: op.op_in_trx,
             blockNum: op.block,
             opType: opTypeStr,
             sender,
@@ -185,6 +186,7 @@ async function scanBlocks(): Promise<number> {
         try {
           await db.insert(blockchainOps).values({
             txId: op.trx_id,
+            opIndex: op.op_in_trx,
             blockNum: op.block,
             opType: 'transfer',
             sender: transfer.from,

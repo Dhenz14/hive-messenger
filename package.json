@@ -8,8 +8,11 @@
     "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "build:pages": "GITHUB_PAGES=true vite build",
     "start": "NODE_ENV=production node dist/index.js",
-    "check": "npm run check:extracted-image-messaging && tsc",
+    "check": "npm run check:extracted-image-messaging && npm run check:extracted-image-types && npm run check:image-message-contracts && npm run check:image-message-runtime && tsc",
     "check:extracted-image-messaging": "node scripts/check-extracted-image-messaging-drift.mjs",
+    "check:extracted-image-types": "tsc --noEmit --strict --skipLibCheck --target ES2020 --module ESNext --moduleResolution bundler --lib esnext,dom EXTRACTED_IMAGE_MESSAGING/types/hive-keychain.d.ts EXTRACTED_IMAGE_MESSAGING/integration/hive-custom-json-functions.ts EXTRACTED_IMAGE_MESSAGING/lib/imageChunking.ts",
+    "check:image-message-contracts": "node scripts/check-image-message-contracts.mjs",
+    "check:image-message-runtime": "tsx scripts/check-image-message-runtime.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {

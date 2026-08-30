@@ -8,7 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { requestTransfer, broadcastTextMessage } from '@/lib/hive';
 import { requestKeychainEncryption } from '@/lib/encryption';
-import { cacheCustomJsonMessage, cacheMessage, getConversationKey } from '@/lib/messageCache';
+import { cacheMessage, getConversationKey } from '@/lib/messageCache';
 import { processImageForBlockchain } from '@/lib/imageUtils';
 import { encryptImagePayload, encryptTextPayload, type ImagePayload, type TextPayload } from '@/lib/customJsonEncryption';
 import { broadcastImageMessage } from '@/lib/imageChunking';
@@ -199,21 +199,6 @@ export function MessageComposer({
 
       // Step 5: Cache locally with UNCOMPRESSED base64 for display
       const conversationKey = getConversationKey(user.username, recipientUsername);
-      await cacheCustomJsonMessage({
-        txId,
-        conversationKey,
-        from: user.username,
-        to: recipientUsername,
-        imageData: processedImage.base64Uncompressed, // Use uncompressed for display
-        message: content.trim() || undefined,
-        filename: selectedImage.name,
-        contentType: processedImage.contentType,
-        timestamp: new Date().toISOString(),
-        encryptedPayload: encrypted,
-        hash,
-        isDecrypted: true,
-        confirmed: true
-      }, user.username);
       await cacheMessage({
         id: txId,
         conversationKey,

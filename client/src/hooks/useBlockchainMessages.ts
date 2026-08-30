@@ -87,7 +87,12 @@ async function fetchServerHistoryMessages(
     sessionId: row.sessionId || undefined,
     chunkIndex: row.chunkIndex ?? undefined,
     totalChunks: row.totalChunks ?? undefined,
-  })).filter((row: ConversationHistoryOp) => row.txId && row.from && row.to && row.opType);
+  })).filter((row: ConversationHistoryOp) =>
+    row.txId &&
+    row.from &&
+    row.to &&
+    (row.opType === 'transfer' || row.opType === 'custom_json_text' || row.opType === 'custom_json_img')
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -258,26 +263,38 @@ export function useBlockchainMessages({
           const chunkedImages = new Map<string, ConversationHistoryOp[]>();
 
           for (const op of ops) {
+            const isConversationOp =
+              (op.from === user.username && op.to === partnerUsername) ||
+              (op.from === partnerUsername && op.to === user.username);
+            if (!isConversationOp) continue;
+
             if (op.opType === 'custom_json_img' && op.sessionId) {
-              if (!chunkedImages.has(op.sessionId)) {
-                chunkedImages.set(op.sessionId, []);
+              const groupKey = `${op.from}\u0000${op.to}\u0000${op.sessionId}`;
+              if (!chunkedImages.has(groupKey)) {
+                chunkedImages.set(groupKey, []);
               }
-              chunkedImages.get(op.sessionId)!.push(op);
+              chunkedImages.get(groupKey)!.push(op);
               continue;
             }
             addHistoryMessage(op);
           }
 
           Array.from(chunkedImages.values()).forEach((chunks) => {
-            const totalChunks = chunks[0]?.totalChunks || chunks.length;
             const sorted = [...chunks].sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
+            const first = sorted[0];
+            if (!first || !Number.isSafeInteger(first.totalChunks) || (first.totalChunks ?? 0) <= 0) return;
+            const totalChunks = first.totalChunks as number;
             const hasAllChunks =
               sorted.length === totalChunks &&
-              sorted.every((chunk, index) => chunk.chunkIndex === index);
+              sorted.every((chunk, index) =>
+                chunk.chunkIndex === index &&
+                chunk.totalChunks === totalChunks &&
+                chunk.sessionId === first.sessionId &&
+                chunk.from === first.from &&
+                chunk.to === first.to
+              );
             if (!hasAllChunks) return;
 
-            const first = sorted[0];
-            if (!first) return;
             addHistoryMessage(
               first,
               sorted.map((chunk) => chunk.payload).join(''),

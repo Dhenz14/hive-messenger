@@ -151,7 +151,7 @@ decryptImagePayload(encrypted, username, hash)
 
 **Key Functions**:
 ```typescript
-broadcastImageMessage(username, encrypted, hash)
+broadcastImageMessage(username, recipientUsername, encrypted, hash)
 ├─▶ Estimate payload size
 ├─▶ IF < 7.5KB: broadcastSingleOperation()
 │   └─▶ window.hive_keychain.requestCustomJson()
@@ -395,7 +395,7 @@ Before sending image
 ### Broadcast Errors
 
 - **Insufficient RC**: Show RC percentage, suggest waiting
-- **Network failure**: Retry with exponential backoff
+- **Ambiguous network failure**: Do not blindly retry; wait for propagation and verify inclusion first
 - **Invalid operation**: Log error, notify user
 
 ### Decryption Errors
@@ -408,9 +408,9 @@ Before sending image
 
 ### Current Limits
 
-- **Max image size**: 5MB original (compressed to ~500KB final)
-- **Max chunks**: ~70 chunks per image (theoretically)
-- **Practical limit**: ~10 chunks (70KB encrypted payload)
+- **Input image size**: 5MB original before client-side compression
+- **Atomic transaction limit**: 8 chunks (56KB encrypted payload plus metadata)
+- **Oversize behavior**: Fail after encryption but before broadcast approval or chain submission
 
 ### Optimization Opportunities
 

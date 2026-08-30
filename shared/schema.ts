@@ -59,6 +59,7 @@ export const contacts = pgTable("contacts", {
 export const blockchainOps = pgTable("blockchain_ops", {
   id: serial("id").primaryKey(),
   txId: text("tx_id").notNull(),
+  opIndex: integer("op_index").notNull().default(0),
   blockNum: integer("block_num").notNull(),
   opType: text("op_type").notNull(),          // 'transfer' | 'custom_json_text' | 'custom_json_img'
   sender: text("sender").notNull(),
@@ -72,7 +73,7 @@ export const blockchainOps = pgTable("blockchain_ops", {
   timestamp: timestamp("timestamp").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => ({
-  txIdIdx: uniqueIndex("blockchain_ops_tx_id_idx").on(table.txId),
+  txOpIdx: uniqueIndex("blockchain_ops_tx_op_idx").on(table.txId, table.opIndex),
   senderIdx: index("blockchain_ops_sender_idx").on(table.sender),
   recipientIdx: index("blockchain_ops_recipient_idx").on(table.recipient),
   blockNumIdx: index("blockchain_ops_block_num_idx").on(table.blockNum),

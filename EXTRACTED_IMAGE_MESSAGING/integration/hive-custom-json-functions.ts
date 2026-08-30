@@ -45,33 +45,50 @@ export async function getCustomJsonMessages(
     // Create Hive client with reliable RPC nodes
     const client = new Client([
       'https://api.hive.blog',
-      'https://api.hivekings.com',
-      'https://anyx.io',
-      'https://api.openhive.network'
+      'https://api.deathwing.me',
+      'https://api.openhive.network',
     ]);
     
     // custom_json is operation type 18, so bit 18 = 2^18 = 262144
     const operationFilterLow = 262144;
 
-    // Fetch account history with operation filter
-    const history = await client.database.call('get_account_history', [
-      username,
-      -1, // Start from most recent
-      limit,
-      operationFilterLow, // Only custom_json operations
-    ]);
+    // A recipient is payload metadata, not an operation authority. Query both
+    // participants so incoming and outgoing messages are discoverable.
+    const histories = await Promise.all(
+      [username, partnerUsername].map((account) =>
+        client.database.call('get_account_history', [
+          account,
+          -1, // Start from most recent
+          limit,
+          operationFilterLow, // Only custom_json operations
+        ])
+      )
+    );
+    const history = histories.flat();
 
     console.log('[CUSTOM JSON] Retrieved', history.length, 'custom_json operations from blockchain');
 
     // Parse operations and reassemble chunks
-    const chunkedSessions = new Map<string, any[]>();
+    type ChunkEnvelope = {
+      payload: any;
+      from: string;
+      to: string;
+      txId: string;
+      timestamp: string;
+    };
+    const chunkedSessions = new Map<string, ChunkEnvelope[]>();
     const singleOperations: CustomJsonOperation[] = [];
+    const seenOperations = new Set<string>();
 
     for (const [, op] of history) {
-      if (op[0] !== 'custom_json') continue;
+      const [opType, customJson] = op.op;
+      if (opType !== 'custom_json') continue;
 
-      const customJson = op[1];
       if (customJson.id !== 'hive-messenger-img') continue;
+
+      const operationKey = `${op.trx_id}:${op.op_in_trx ?? 0}`;
+      if (seenOperations.has(operationKey)) continue;
+      seenOperations.add(operationKey);
 
       let payload: any;
       try {
@@ -81,30 +98,49 @@ export async function getCustomJsonMessages(
         continue;
       }
 
+      if (payload.v !== 1 || (payload.type !== undefined && payload.type !== 'image')) continue;
+      if (typeof payload.e !== 'string' || payload.e.length === 0) continue;
+
       // Verify this is between the two users
-      const from = customJson.required_posting_auths[0];
-      const recipient = payload.to || payload.t;
-      if (
-        (from !== username && from !== partnerUsername) ||
-        (!recipient || (recipient !== username && recipient !== partnerUsername))
-      ) {
-        continue;
-      }
+      const from = customJson.required_posting_auths?.[0];
+      const recipient = typeof (payload.to || payload.t) === 'string'
+        ? (payload.to || payload.t)
+        : undefined;
+      const isRelevant =
+        (from === username && recipient === partnerUsername) ||
+        (from === partnerUsername && recipient === username);
+      if (!isRelevant || !from || !recipient) continue;
 
       // Check if this is a chunked operation
       if (payload.sid) {
         // Multi-chunk operation
-        if (!chunkedSessions.has(payload.sid)) {
-          chunkedSessions.set(payload.sid, []);
+        if (
+          typeof payload.sid !== 'string' ||
+          !Number.isSafeInteger(payload.idx) ||
+          payload.idx < 0 ||
+          !Number.isSafeInteger(payload.tot) ||
+          payload.tot <= 0
+        ) {
+          continue;
         }
-        chunkedSessions.get(payload.sid)!.push(payload);
+        const groupKey = `${from}\u0000${recipient}\u0000${payload.sid}`;
+        if (!chunkedSessions.has(groupKey)) {
+          chunkedSessions.set(groupKey, []);
+        }
+        chunkedSessions.get(groupKey)!.push({
+          payload,
+          from,
+          to: recipient,
+          txId: op.trx_id,
+          timestamp: op.timestamp,
+        });
       } else {
         // Single operation
         singleOperations.push({
-          txId: op[1].trx_id || `${op[1].block}-${op[1].trx_in_block}`,
+          txId: op.trx_id || `${op.block}-${op.trx_in_block}`,
           from,
           to: recipient,
-          timestamp: op[1].timestamp,
+          timestamp: op.timestamp,
           encryptedPayload: payload.e,
           hash: payload.h,
           chunks: 1,
@@ -115,24 +151,24 @@ export async function getCustomJsonMessages(
     // Reassemble chunked messages
     const operations: CustomJsonOperation[] = [...singleOperations];
 
-    for (const [sessionId, chunks] of chunkedSessions.entries()) {
-      const reassembled = reassembleChunks(chunks);
-      
-      for (const [sid, { encrypted, hash }] of reassembled.entries()) {
-        const firstChunk = chunks.find((c: any) => c.sid === sid);
-        if (!firstChunk) continue;
+    for (const chunks of chunkedSessions.values()) {
+      const firstChunk = chunks[0];
+      if (!firstChunk) continue;
+      const sessionId = firstChunk.payload.sid;
+      const reassembled = reassembleChunks(chunks.map((chunk) => chunk.payload));
+      const complete = reassembled.get(sessionId);
+      if (!complete) continue;
 
-        operations.push({
-          txId: sessionId,
-          sessionId: sid,
-          from: chunks[0]?.from || username,
-          to: firstChunk.to || firstChunk.t || partnerUsername,
-          timestamp: new Date().toISOString(), // You may want to extract from operation
-          encryptedPayload: encrypted,
-          hash,
-          chunks: chunks.length,
-        });
-      }
+      operations.push({
+        txId: firstChunk.txId,
+        sessionId,
+        from: firstChunk.from,
+        to: firstChunk.to,
+        timestamp: firstChunk.timestamp,
+        encryptedPayload: complete.encrypted,
+        hash: complete.hash,
+        chunks: chunks.length,
+      });
     }
 
     console.log('[CUSTOM JSON] Processed', operations.length, 'image messages (including reassembled chunks)');

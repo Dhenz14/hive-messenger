@@ -628,12 +628,17 @@ export async function getCustomJsonTextMessages(
     
     // Fetch account history with operation filter
     // custom_json is operation type 18, so bit 18 = 2^18 = 262144
-    const history = await hiveClient.database.call('get_account_history', [
-      username,
-      -1,
-      limit,
-      262144  // Filter for custom_json operations only (2^18)
-    ]);
+    const histories = await Promise.all(
+      [username, partnerUsername].map((account) =>
+        hiveClient.database.call('get_account_history', [
+          account,
+          -1,
+          limit,
+          262144  // Filter for custom_json operations only (2^18)
+        ])
+      )
+    );
+    const history = histories.flat();
     
     if (!history || !Array.isArray(history)) {
       logger.warn('[CUSTOM JSON TEXT] No history returned');
@@ -643,12 +648,17 @@ export async function getCustomJsonTextMessages(
     logger.info('[CUSTOM JSON TEXT] Retrieved', history.length, 'operations from blockchain');
     
     const textMessages: CustomJsonTextOperation[] = [];
+    const seenTextOperations = new Set<string>();
     
     for (const [index, op] of history) {
       const [opType, opData] = op.op;
       
       if (opType !== 'custom_json') continue;
       if (opData.id !== 'hive-messenger-text') continue;
+
+      const operationKey = `${op.trx_id}:${op.op_in_trx ?? 0}`;
+      if (seenTextOperations.has(operationKey)) continue;
+      seenTextOperations.add(operationKey);
       
       let jsonData: any;
       try {
@@ -659,14 +669,19 @@ export async function getCustomJsonTextMessages(
       }
       
       // Check version and type
-      if (jsonData.v !== 1 || jsonData.type !== 'text') continue;
+      if (
+        jsonData.v !== 1 ||
+        jsonData.type !== 'text' ||
+        typeof jsonData.e !== 'string' ||
+        jsonData.e.length === 0
+      ) continue;
       
       // Determine sender from required_posting_auths
       const sender = opData.required_posting_auths?.[0];
       if (!sender) continue;
       
       // Get recipient from JSON
-      const recipient = jsonData.to;
+      const recipient = typeof jsonData.to === 'string' ? jsonData.to : undefined;
       if (!recipient) continue;
       
       // Check if this involves our conversation (either direction)
@@ -724,12 +739,17 @@ export async function getCustomJsonMessages(
     // Use direct client for database.call (optimizedHiveClient doesn't expose this)
     // Fetch account history with operation filter
     // custom_json is operation type 18, so bit 18 = 2^18 = 262144
-    const history = await hiveClient.database.call('get_account_history', [
-      username,
-      -1,
-      limit,
-      262144  // Filter for custom_json operations only (2^18)
-    ]);
+    const histories = await Promise.all(
+      [username, partnerUsername].map((account) =>
+        hiveClient.database.call('get_account_history', [
+          account,
+          -1,
+          limit,
+          262144  // Filter for custom_json operations only (2^18)
+        ])
+      )
+    );
+    const history = histories.flat();
     
     if (!history || !Array.isArray(history)) {
       logger.warn('[CUSTOM JSON] No history returned');
@@ -747,16 +767,23 @@ export async function getCustomJsonMessages(
       from: string;
       to: string;
       txId: string;
+      sessionId: string;
+      total: number;
     }>>();
     
     // Track single-operation messages
     const singleMessages: CustomJsonOperation[] = [];
+    const seenOperations = new Set<string>();
     
     for (const [index, op] of history) {
       const [opType, opData] = op.op;
       
       if (opType !== 'custom_json') continue;
       if (opData.id !== 'hive-messenger-img') continue;
+
+      const operationKey = `${op.trx_id}:${op.op_in_trx ?? 0}`;
+      if (seenOperations.has(operationKey)) continue;
+      seenOperations.add(operationKey);
       
       let jsonData: any;
       try {
@@ -765,12 +792,17 @@ export async function getCustomJsonMessages(
         logger.warn('[CUSTOM JSON] Failed to parse JSON:', parseError);
         continue;
       }
+
+      if (jsonData.v !== 1 || (jsonData.type !== undefined && jsonData.type !== 'image')) continue;
+      if (typeof jsonData.e !== 'string' || jsonData.e.length === 0) continue;
       
       // Determine sender/receiver from required_posting_auths
       const sender = opData.required_posting_auths?.[0];
       if (!sender) continue;
       
-      const explicitRecipient = jsonData.to || jsonData.t;
+      const explicitRecipient = typeof (jsonData.to || jsonData.t) === 'string'
+        ? (jsonData.to || jsonData.t)
+        : undefined;
       const inferredRecipient = sender === username ? partnerUsername : username;
       const recipient = explicitRecipient || inferredRecipient;
 
@@ -786,18 +818,31 @@ export async function getCustomJsonMessages(
       
       if (jsonData.sid) {
         // Multi-chunk message
-        if (!sessionChunks.has(jsonData.sid)) {
-          sessionChunks.set(jsonData.sid, []);
+        if (
+          typeof jsonData.sid !== 'string' ||
+          !Number.isSafeInteger(jsonData.idx) ||
+          jsonData.idx < 0 ||
+          !Number.isSafeInteger(jsonData.tot) ||
+          jsonData.tot <= 0
+        ) {
+          continue;
+        }
+
+        const groupKey = `${from}\u0000${to}\u0000${jsonData.sid}`;
+        if (!sessionChunks.has(groupKey)) {
+          sessionChunks.set(groupKey, []);
         }
         
-        sessionChunks.get(jsonData.sid)!.push({
+        sessionChunks.get(groupKey)!.push({
           idx: jsonData.idx,
           data: jsonData.e,
           hash: jsonData.h,
           timestamp: normalizeHiveTimestamp(op.timestamp),
           from,
           to,
-          txId: op.trx_id
+          txId: op.trx_id,
+          sessionId: jsonData.sid,
+          total: jsonData.tot,
         });
       } else {
         // Single operation message
@@ -816,20 +861,29 @@ export async function getCustomJsonMessages(
     const reassembledMessages: CustomJsonOperation[] = [];
     
     // Use Array.from to avoid downlevelIteration requirement
-    Array.from(sessionChunks.entries()).forEach(([sessionId, chunks]) => {
-      type ChunkType = { idx: number; data: string; hash?: string; timestamp: string; from: string; to: string; txId: string };
+    Array.from(sessionChunks.values()).forEach((chunks) => {
+      type ChunkType = { idx: number; data: string; hash?: string; timestamp: string; from: string; to: string; txId: string; sessionId: string; total: number };
       
       // Sort by index with explicit types
       chunks.sort((a: ChunkType, b: ChunkType) => a.idx - b.idx);
-      
-      // Validate chunk sequence: indices must be 0, 1, 2, ... with no gaps
-      const maxIdx = Math.max(...chunks.map((c: ChunkType) => c.idx));
-      const hasAllChunks = chunks.length === maxIdx + 1 &&
-        chunks.every((c: ChunkType, i: number) => c.idx === i);
+
+      const firstChunk = chunks[0];
+      if (!firstChunk) return;
+      const { sessionId, total: declaredTotal, from: firstFrom, to: firstTo } = firstChunk;
+      const hasAllChunks = Number.isSafeInteger(declaredTotal) &&
+        declaredTotal > 0 &&
+        chunks.length === declaredTotal &&
+        chunks.every((chunk: ChunkType, index: number) =>
+          chunk.idx === index &&
+          chunk.total === declaredTotal &&
+          chunk.sessionId === sessionId &&
+          chunk.from === firstFrom &&
+          chunk.to === firstTo
+        );
 
       if (!hasAllChunks) {
         logger.warn('[CUSTOM JSON] Incomplete/missing chunks for session:', sessionId,
-          'have', chunks.length, 'chunks, max idx:', maxIdx,
+          'have', chunks.length, 'chunks, declared total:', declaredTotal,
           'indices:', chunks.map((c: ChunkType) => c.idx));
         return; // Skip this session — missing chunks
       }
@@ -839,10 +893,10 @@ export async function getCustomJsonMessages(
       const hash = chunks.find((c: ChunkType) => c.hash)?.hash;
       
       reassembledMessages.push({
-        txId: chunks[0].txId, // Use first chunk's txId
-        timestamp: chunks[0].timestamp,
-        from: chunks[0].from,
-        to: chunks[0].to,
+        txId: firstChunk.txId, // All chunks in the current protocol share one transaction
+        timestamp: firstChunk.timestamp,
+        from: firstChunk.from,
+        to: firstChunk.to,
         encryptedPayload: fullPayload,
         hash,
         sessionId,
